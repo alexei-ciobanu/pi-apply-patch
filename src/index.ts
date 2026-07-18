@@ -1305,8 +1305,8 @@ async function applyParsedPatchDetailed(
 
 function formatApplyPatchFailure(result: ApplyPatchResult): string {
 	const lines = [result.hasPartialSuccess ? "apply_patch partially failed." : "apply_patch failed."];
-	if (result.appliedFiles.length > 0) {
-		lines.push(`Applied files: ${result.appliedFiles.join(", ")}`);
+	if (result.summaries.length > 0) {
+		lines.push("Applied actions:", ...result.summaries.map((summary) => `- ${summary}`));
 	} else {
 		lines.push("No file actions were applied.");
 	}

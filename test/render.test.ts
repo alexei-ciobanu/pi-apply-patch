@@ -442,7 +442,7 @@ describe("render helpers", () => {
 			content: [
 				{
 					type: "text" as const,
-					text: "apply_patch partially failed.\nApplied files: src/foo.ts\nFailed:\n- src/bar.ts (update): context mismatch",
+					text: "apply_patch partially failed.\nApplied actions:\n- update: src/foo.ts\nFailed:\n- src/bar.ts (update): context mismatch",
 				},
 			],
 			details: {
@@ -484,7 +484,8 @@ describe("render helpers", () => {
 		expect(rendered).toContain("<bg:toolErrorBg>");
 		expect(rendered).toContain("<bold>Patch partially failed</bold>");
 		expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
-		expect(rendered).toContain("<fg:toolOutput>Applied files: src/foo.ts");
+		expect(rendered).toContain("<fg:toolOutput>Applied actions:");
+		expect(rendered).toContain("- update: src/foo.ts");
 		expect(rendered).toContain("src/bar.ts (update): context mismatch");
 	});
 
