@@ -1443,13 +1443,13 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 								.join("\n"),
 						},
 					],
-					details: { result },
+					details: preview ? { preview, result } : { result },
 				};
 			}
 
 			return {
 				content: [{ type: "text", text: result.summaries.join("\n") }],
-				details: { result },
+				details: preview ? { preview, result } : { result },
 			};
 		},
 		renderCall(args, theme, context) {
@@ -1466,16 +1466,38 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 			const component = new Container();
 			const preview = result.details?.preview;
 			if (preview) {
-				const bgName = options.isPartial ? "toolPendingBg" : "toolSuccessBg";
+				const patchResult = result.details?.result;
+				const hasFailures = (patchResult?.failures.length ?? 0) > 0;
+				const bgName = options.isPartial ? "toolPendingBg" : hasFailures ? "toolErrorBg" : "toolSuccessBg";
 				const progress = result.details?.progress;
 				const title = progress
 					? `Applying patch (${progress.applied + progress.failed}/${progress.total})`
-					: "Applying patch";
+					: options.isPartial
+						? "Applying patch"
+						: hasFailures
+							? patchResult?.hasPartialSuccess
+								? "Patch partially failed"
+								: "Patch failed"
+							: "Applied patch";
 				const box = new Box(1, 1, (text: string) => applyLayeredBackground(theme, bgName, text));
 				box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
 				box.addChild(new Spacer(1));
 				const expanded = options.isPartial ? true : (options.expanded ?? true);
 				box.addChild(new Text(renderPatchPreview(preview, context.cwd, theme, expanded), 0, 0));
+				if (hasFailures) {
+					const failureDetails = result.content
+						.filter((block) => block.type === "text")
+						.map((block) => block.text)
+						.filter((value) => typeof value === "string" && value.length > 0)
+						.join("\n")
+						.split("\n")
+						.slice(1)
+						.join("\n");
+					if (failureDetails) {
+						box.addChild(new Spacer(1));
+						box.addChild(new Text(theme.fg("error", failureDetails), 0, 0));
+					}
+				}
 				component.addChild(box);
 				return component;
 			}
