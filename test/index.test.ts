@@ -329,7 +329,7 @@ describe("pi-apply-patch", () => {
 		} as never);
 		const component = tool.renderResult?.(
 			result,
-			{ expanded: true, isPartial: false },
+			{ expanded: false, isPartial: false },
 			identityTheme as never,
 			{ cwd: directory, toolCallId: "apply-patch-final-preview-test", args: { input: patch } } as never,
 		);
