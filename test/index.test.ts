@@ -213,36 +213,45 @@ describe("pi-apply-patch", () => {
 		expect(await readFile(path.join(directory, "sample.txt"), "utf-8")).toBe("after\n");
 	});
 
-	it("#given parent traversal path #when applying patch #then rejects outside workspace", async () => {
+	it("#given parent traversal path #when applying patch #then applies outside cwd", async () => {
 		// given
 		const directory = await createTempDirectory();
-		const outsidePath = path.join(path.dirname(directory), "outside.ts");
+		const outsidePath = path.join(path.dirname(directory), `${path.basename(directory)}-outside.ts`);
+		const relativeOutsidePath = path.relative(directory, outsidePath);
 		tempDirectories.push(outsidePath);
 		await writeFile(outsidePath, "outside\n", "utf-8");
 		const patch = `*** Begin Patch
-*** Update File: ../outside.ts
+*** Update File: ${relativeOutsidePath}
 @@
 -outside
 +changed
 *** End Patch`;
 
-		// when / then
-		await expect(applyPatch(directory, patch)).rejects.toThrow("escapes workspace");
-		expect(await readFile(outsidePath, "utf-8")).toBe("outside\n");
+		// when
+		await applyPatch(directory, patch);
+
+		// then
+		expect(await readFile(outsidePath, "utf-8")).toBe("changed\n");
 	});
 
-	it("#given absolute path outside workspace #when applying patch #then rejects outside workspace", async () => {
+	it("#given absolute path outside cwd #when applying patch #then applies outside cwd", async () => {
 		// given
 		const directory = await createTempDirectory();
+		const outsidePath = path.join(path.dirname(directory), `${path.basename(directory)}-absolute.ts`);
+		tempDirectories.push(outsidePath);
+		await writeFile(outsidePath, "outside\n", "utf-8");
 		const patch = `*** Begin Patch
-*** Update File: /etc/passwd
+*** Update File: ${outsidePath}
 @@
--root
-+toor
+-outside
++changed
 *** End Patch`;
 
-		// when / then
-		await expect(applyPatch(directory, patch)).rejects.toThrow("escapes workspace");
+		// when
+		await applyPatch(directory, patch);
+
+		// then
+		expect(await readFile(outsidePath, "utf-8")).toBe("changed\n");
 	});
 
 	it("#given apply_patch tool execution #when started #then emits pending TUI diff update", async () => {
@@ -300,6 +309,39 @@ describe("pi-apply-patch", () => {
 		expect(rendered).toContain("sample.txt (+1 -1)");
 		expect(rendered).toContain("+1 after");
 		expect(rendered).not.toContain("Index:");
+	});
+
+	it("#given successful apply_patch execution #when settled #then retains the final TUI diff", async () => {
+		// given
+		const directory = await createTempDirectory();
+		await writeFile(path.join(directory, "sample.txt"), "before\n", "utf-8");
+		const patch = `*** Begin Patch
+*** Update File: sample.txt
+@@
+-before
++after
+*** End Patch`;
+		const tool = createApplyPatchTool();
+
+		// when
+		const result = await tool.execute("apply-patch-final-preview-test", { input: patch }, undefined, undefined, {
+			cwd: directory,
+		} as never);
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: true, isPartial: false },
+			identityTheme as never,
+			{ cwd: directory, toolCallId: "apply-patch-final-preview-test", args: { input: patch } } as never,
+		);
+		const rendered = component?.render(120).join("\n") ?? "";
+
+		// then
+		expect(result.details?.preview).toBeDefined();
+		expect(rendered).toContain("Applied patch");
+		expect(rendered).toContain("• Edited sample.txt (+1 -1)");
+		expect(rendered).toContain("-1 before");
+		expect(rendered).toContain("+1 after");
+		expect(await readFile(path.join(directory, "sample.txt"), "utf-8")).toBe("after\n");
 	});
 
 	it("#given nested cwd #when previewing absolute workspace path #then formats relative to cwd", async () => {
@@ -668,22 +710,24 @@ EOF`;
 		expect(await readFile(path.join(directory, "new.txt"), "utf-8")).toBe("no trailing newline");
 	});
 
-	it("#given absolute path outside workspace #when executed #then rejects patch", async () => {
+	it("#given absolute path outside cwd #when executed #then applies patch", async () => {
 		// given
 		const directory = await createTempDirectory();
-		const outsidePath = path.join(path.dirname(directory), "outside-apply-patch.txt");
+		const outsidePath = path.join(path.dirname(directory), `${path.basename(directory)}-outside-apply-patch.txt`);
 		tempDirectories.push(outsidePath);
 		const patch = `*** Begin Patch
 *** Add File: ${outsidePath}
 +outside
 *** End Patch`;
 
-		// when / then
-		await expect(applyPatch(directory, patch)).rejects.toThrow("escapes workspace");
-		await expect(readFile(outsidePath, "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+		// when
+		await applyPatch(directory, patch);
+
+		// then
+		expect(await readFile(outsidePath, "utf-8")).toBe("outside\n");
 	});
 
-	it("#given symlink escaping workspace #when executed #then rejects patch", async () => {
+	it("#given symlink escaping cwd #when executed #then applies patch", async () => {
 		// given
 		const directory = await createTempDirectory();
 		const outsideDirectory = await createTempDirectory();
@@ -693,11 +737,11 @@ EOF`;
 +outside
 *** End Patch`;
 
-		// when / then
-		await expect(applyPatch(directory, patch)).rejects.toThrow("escapes workspace");
-		await expect(readFile(path.join(outsideDirectory, "outside.txt"), "utf-8")).rejects.toMatchObject({
-			code: "ENOENT",
-		});
+		// when
+		await applyPatch(directory, patch);
+
+		// then
+		expect(await readFile(path.join(outsideDirectory, "outside.txt"), "utf-8")).toBe("outside\n");
 	});
 
 	it("#given empty codex patch #when applying #then throws typed parse error", async () => {
@@ -760,8 +804,7 @@ EOF`;
 		expect(result.appliedFiles).toEqual(["ok.txt"]);
 		expect(result.failures).toHaveLength(1);
 		expect(result.failures[0]?.filePath).toBe("broken.txt");
-		expect(result.recoveryInstructions.mustReadFiles).toEqual(["broken.txt"]);
-		expect(result.recoveryInstructions.mustNotReadFiles).toEqual(["ok.txt"]);
+		expect(result.failures[0]?.message).toContain("Failed to find expected lines in broken.txt");
 	});
 
 	it("#given partial patch failure #when applying compat api #then fails fast after first error", async () => {
@@ -809,7 +852,7 @@ EOF`;
 		expect(result.details.fuzz).toBe(10001);
 	});
 
-	it("#given apply patch tool partial failure #when executed #then returns recovery instructions text", async () => {
+	it("#given apply patch tool partial failure #when executed #then reports applied files and the real error", async () => {
 		// given
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "ok.txt"), "before\n", "utf-8");
@@ -833,12 +876,133 @@ EOF`;
 		// then
 		const text = result.content.find((block) => block.type === "text")?.text ?? "";
 		expect(text).toContain("apply_patch partially failed.");
-		expect(text).toContain("Failed: broken.txt");
-		expect(text).toContain("Recovery: MUST read broken.txt before retrying.");
-		expect(text).toContain("Earlier file actions in this patch were already applied.");
-		expect(text).toContain(
-			"Recovery: MUST NOT reread other files from this patch unless a specific dependency requires it.",
+		expect(text).toContain("Applied files: ok.txt");
+		expect(text).toContain("Failed:\n- broken.txt (update): Failed to find expected lines in broken.txt:\n  missing");
+		expect(text).not.toContain("MUST read");
+		expect(text).not.toContain("MUST NOT reread");
+		expect(result.details?.preview).toBeDefined();
+
+		const component = createApplyPatchTool().renderResult?.(
+			result,
+			{ expanded: true, isPartial: false },
+			identityTheme as never,
+			{ cwd: directory, toolCallId: "apply-patch-failure-render", args: { input: patch } } as never,
 		);
+		const rendered = component?.render(160).join("\n") ?? "";
+		expect(rendered).toContain("Patch partially failed");
+		expect(rendered).toContain("• Edited ok.txt (+1 -1)");
+		expect(rendered).toContain("broken.txt (update): Failed to find expected lines");
+	});
+
+	it("#given apply patch tool complete failure #when executed #then does not report partial failure", async () => {
+		// given
+		const directory = await createTempDirectory();
+		await writeFile(path.join(directory, "broken.txt"), "line\n", "utf-8");
+		const patch = `*** Begin Patch
+*** Update File: broken.txt
+@@
+-missing
++changed
+*** End Patch`;
+
+		// when
+		const result = await createApplyPatchTool().execute("apply-patch-test", { input: patch }, undefined, undefined, {
+			cwd: directory,
+		} as never);
+
+		// then
+		const text = result.content.find((block) => block.type === "text")?.text ?? "";
+		expect(text).toContain("apply_patch failed.");
+		expect(text).not.toContain("partially failed");
+		expect(text).toContain("No file actions were applied.");
+		expect(text).toContain("broken.txt (update): Failed to find expected lines in broken.txt");
+		expect(text).not.toContain("MUST read");
+	});
+
+	it("#given a missing update target #when the tool fails #then reports the filesystem error", async () => {
+		// given
+		const directory = await createTempDirectory();
+		const patch = `*** Begin Patch
+*** Update File: missing.txt
+@@
+-before
++after
+*** End Patch`;
+
+		// when
+		const result = await createApplyPatchTool().execute(
+			"apply-patch-missing-file-test",
+			{ input: patch },
+			undefined,
+			undefined,
+			{ cwd: directory } as never,
+		);
+
+		// then
+		const text = result.content.find((block) => block.type === "text")?.text ?? "";
+		expect(text).toContain("missing.txt (update)");
+		expect(text).toContain("ENOENT");
+		expect(text).not.toContain("MUST read");
+	});
+
+	it("#given concurrent patches to different lines in one file #when applied #then preserves both updates", async () => {
+		// given
+		const directory = await createTempDirectory();
+		await writeFile(path.join(directory, "shared.txt"), "first\nsecond\n", "utf-8");
+		const firstPatch = `*** Begin Patch
+*** Update File: shared.txt
+@@
+-first
++FIRST
+*** End Patch`;
+		const secondPatch = `*** Begin Patch
+*** Update File: shared.txt
+@@
+-second
++SECOND
+*** End Patch`;
+
+		// when
+		await Promise.all([applyPatch(directory, firstPatch), applyPatch(directory, secondPatch)]);
+
+		// then
+		expect(await readFile(path.join(directory, "shared.txt"), "utf-8")).toBe("FIRST\nSECOND\n");
+	});
+
+	it("#given concurrent update and move of one file #when applied #then produces a serialized outcome", async () => {
+		// given
+		const directory = await createTempDirectory();
+		await writeFile(path.join(directory, "source.txt"), "first\nsecond\n", "utf-8");
+		const updatePatch = `*** Begin Patch
+*** Update File: source.txt
+@@
+-second
++SECOND
+*** End Patch`;
+		const movePatch = `*** Begin Patch
+*** Update File: source.txt
+*** Move to: destination.txt
+@@
+-first
++FIRST
+*** End Patch`;
+
+		// when
+		const [updateResult, moveResult] = await Promise.all([
+			applyPatchDetailed(directory, updatePatch),
+			applyPatchDetailed(directory, movePatch),
+		]);
+
+		// then
+		const failureCount = updateResult.failures.length + moveResult.failures.length;
+		expect(failureCount === 0 || failureCount === 1).toBe(true);
+		await expect(readFile(path.join(directory, "source.txt"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+		const destination = await readFile(path.join(directory, "destination.txt"), "utf-8");
+		if (failureCount === 0) {
+			expect(destination).toBe("FIRST\nSECOND\n");
+		} else {
+			expect(destination).toBe("FIRST\nsecond\n");
+		}
 	});
 
 	it("#given successful patch write #when applying patch #then atomic temp files are cleaned", async () => {

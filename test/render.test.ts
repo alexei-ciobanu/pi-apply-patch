@@ -337,6 +337,56 @@ describe("render helpers", () => {
 		expect(rendered).toContain("<fg:toolDiffAdded>alpha <inverse>new</inverse></fg:toolDiffAdded>");
 	});
 
+	it("#given a settled partial failure #when rendering result #then keeps the diff in an error shell", () => {
+		// given
+		const tool = createApplyPatchTool();
+		const result = {
+			content: [
+				{
+					type: "text" as const,
+					text: "apply_patch partially failed.\nApplied files: src/foo.ts\nFailed:\n- src/bar.ts (update): context mismatch",
+				},
+			],
+			details: {
+				preview: {
+					files: [
+						{
+							filePath: "src/foo.ts",
+							operation: "update" as const,
+							diff: "-1 old\n+1 new",
+							added: 1,
+							removed: 1,
+						},
+					],
+					added: 1,
+					removed: 1,
+				},
+				result: {
+					summaries: ["update: src/foo.ts"],
+					appliedFiles: ["src/foo.ts"],
+					failures: [{ filePath: "src/bar.ts", operation: "update" as const, message: "context mismatch" }],
+					hasPartialSuccess: true,
+					details: { fuzz: 0 },
+				},
+			},
+		};
+
+		// when
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: true, isPartial: false },
+			markerTheme as never,
+			{ cwd: "/workspace/project", toolCallId: "result-failed", args: { input: "" } } as never,
+		);
+		const rendered = component?.render(200).join("\n") ?? "";
+
+		// then
+		expect(rendered).toContain("<bg:toolErrorBg>");
+		expect(rendered).toContain("<bold>Patch partially failed</bold>");
+		expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
+		expect(rendered).toContain("src/bar.ts (update): context mismatch");
+	});
+
 	it("#given multi-file preview #when rendering result collapsed #then shows grouped summary", () => {
 		// given
 		const tool = createApplyPatchTool();
