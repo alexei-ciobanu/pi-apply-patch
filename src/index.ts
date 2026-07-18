@@ -716,10 +716,7 @@ function renderOpenCodeLikeDiffLine(
 
 	const diffColor = line.kind === "added" ? "toolDiffAdded" : "toolDiffRemoved";
 	const background = line.kind === "added" ? "toolSuccessBg" : "toolErrorBg";
-	const content =
-		contentOverride === undefined
-			? highlightDiffContent(line.content, filePath)
-			: theme.fg(diffColor, replaceTabs(contentOverride));
+	const content = theme.fg(diffColor, replaceTabs(contentOverride ?? line.content));
 	const rendered = `${theme.fg(diffColor, line.sign)}${lineNumber} ${content}`;
 	return theme.bg(background, rendered);
 }
@@ -1353,6 +1350,22 @@ function syncToolset(
 	pi.setActiveTools(replaceApplyPatchWithEditTools(currentToolNames));
 }
 
+export function applyPatchFailureErrorOverride(event: {
+	details: unknown;
+	toolName: string;
+}): { isError: true } | undefined {
+	if (event.toolName !== "apply_patch" || !event.details || typeof event.details !== "object") {
+		return undefined;
+	}
+	if (!("result" in event.details) || !event.details.result || typeof event.details.result !== "object") {
+		return undefined;
+	}
+	if (!("failures" in event.details.result) || !Array.isArray(event.details.result.failures)) {
+		return undefined;
+	}
+	return event.details.result.failures.length > 0 ? { isError: true } : undefined;
+}
+
 export function createApplyPatchTool(): ApplyPatchToolDefinition {
 	const tool = defineTool({
 		name: "apply_patch",
@@ -1523,6 +1536,8 @@ export function registerApplyPatchExtension(pi: ApplyPatchExtensionAPI): void {
 	pi.on("before_agent_start", async (_event, ctx) => {
 		syncToolset(pi, ctx.model);
 	});
+
+	pi.on("tool_result", (event) => applyPatchFailureErrorOverride(event));
 }
 
 export default registerApplyPatchExtension;
