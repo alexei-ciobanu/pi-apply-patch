@@ -15,5 +15,8 @@
 - Use consistent diff colors for standalone added and removed lines.
 - Render failure details in normal text on Pi's error-colored shell.
 - Show delete operations without reading or rendering the deleted file contents.
+- Match official apply_patch execution by rejecting empty move hunks and stopping at the first failed action.
+- Preview repeated-path actions sequentially while preserving declared add, delete, update, and move labels.
+- Summarize homogeneous patches by operation and mixed patches as file actions.
 - Report underlying per-file failure reasons and applied files instead of generic reread instructions.
 - Serialize concurrent patch mutations through Pi's per-file mutation queue.

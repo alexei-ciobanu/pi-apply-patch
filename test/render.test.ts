@@ -155,6 +155,65 @@ describe("render helpers", () => {
 		expect(rendered).toContain("+1 new");
 	});
 
+	it("#given homogeneous and mixed previews #when summarized #then labels file actions accurately", () => {
+		// given
+		const addedFile = { filePath: "a.txt", operation: "add" as const, diff: "+1 a", added: 1, removed: 0 };
+		const deletedFile = { filePath: "a.txt", operation: "delete" as const, diff: "", added: 0, removed: 0 };
+		const added = {
+			files: [addedFile, { filePath: "b.txt", operation: "add" as const, diff: "+1 b", added: 1, removed: 0 }],
+			added: 2,
+			removed: 0,
+		};
+		const deleted = {
+			files: [deletedFile, { filePath: "b.txt", operation: "delete" as const, diff: "", added: 0, removed: 0 }],
+			added: 0,
+			removed: 0,
+		};
+		const mixed = {
+			files: [addedFile, deletedFile],
+			added: 1,
+			removed: 0,
+		};
+
+		// when / then
+		expect(formatPatchPreview(added)).toContain("• Added 2 files (+2 -0)");
+		expect(formatPatchPreview(deleted)).toContain("• Deleted 2 files");
+		expect(formatPatchPreview(mixed)).toContain("• Applied 2 file actions (+1 -0)");
+	});
+
+	it("#given move previews #when formatted #then distinguishes move-only from move-and-edit", () => {
+		// given
+		const moveOnlyFile = {
+			filePath: "old.txt",
+			movePath: "new.txt",
+			operation: "move" as const,
+			diff: "",
+			added: 0,
+			removed: 0,
+		};
+		const moveOnly = {
+			files: [moveOnlyFile],
+			added: 0,
+			removed: 0,
+		};
+		const moveAndEdit = {
+			files: [
+				{
+					...moveOnlyFile,
+					diff: "-1 old\n+1 new",
+					added: 1,
+					removed: 1,
+				},
+			],
+			added: 1,
+			removed: 1,
+		};
+
+		// when / then
+		expect(formatPatchPreview(moveOnly)).toBe("• Moved old.txt → new.txt");
+		expect(formatPatchPreview(moveAndEdit)).toContain("• Moved and edited old.txt → new.txt (+1 -1)");
+	});
+
 	it("#given cached state #when clearing #then reset helper is callable", () => {
 		// given/when/then
 		expect(() => clearApplyPatchRenderState()).not.toThrow();
@@ -164,14 +223,17 @@ describe("render helpers", () => {
 		// given
 		const patch = `*** Begin Patch
 *** Update File: src/a.ts
+@@
+ existing
 *** Add File: src/b.ts
++new
 *** End Patch`;
 
 		// when
 		const callText = formatInFlightCallText(patch);
 
 		// then
-		expect(callText).toContain("(2 files)");
+		expect(callText).toContain("(2 actions)");
 		expect(callText).toContain("src/a.ts");
 		expect(callText).toContain("src/b.ts");
 	});
@@ -400,8 +462,10 @@ describe("render helpers", () => {
 				result: {
 					summaries: ["update: src/foo.ts"],
 					appliedFiles: ["src/foo.ts"],
+					appliedOperationIndexes: [0],
 					failures: [{ filePath: "src/bar.ts", operation: "update" as const, message: "context mismatch" }],
 					hasPartialSuccess: true,
+					notAttemptedFiles: [],
 					details: { fuzz: 0 },
 				},
 			},
@@ -438,8 +502,10 @@ describe("render helpers", () => {
 				result: {
 					summaries: [],
 					appliedFiles: [],
+					appliedOperationIndexes: [],
 					failures: [{ filePath: "missing.txt", operation: "update" as const, message: "ENOENT" }],
 					hasPartialSuccess: false,
+					notAttemptedFiles: [],
 					details: { fuzz: 0 },
 				},
 			},

@@ -51,12 +51,13 @@ type ApplyPatchParams = {
 	input: string;
 };
 
-type ApplyPatchOperation = "add" | "delete" | "update";
+type ApplyPatchOperation = "add" | "delete" | "move" | "update";
 
 type ApplyPatchPreviewFile = {
 	filePath: string;
 	movePath?: string;
 	operation: ApplyPatchOperation;
+	operationIndex?: number;
 	diff: string;
 	added: number;
 	removed: number;
@@ -82,6 +83,14 @@ type ApplyPatchProgress = {
 
 type ApplyPatchProgressCallback = (progress: ApplyPatchProgress) => Promise<void> | void;
 
+function operationForHunk(hunk: ParsedPatch): ApplyPatchOperation {
+	return hunk.type === "update" && hunk.movePath !== undefined ? "move" : hunk.type;
+}
+
+function displayPathForHunk(hunk: ParsedPatch): string {
+	return hunk.type === "update" && hunk.movePath !== undefined ? `${hunk.filePath} → ${hunk.movePath}` : hunk.filePath;
+}
+
 async function notifyApplyPatchProgress(
 	onProgress: ApplyPatchProgressCallback | undefined,
 	progress: ApplyPatchProgress,
@@ -102,8 +111,10 @@ export type ApplyPatchFailure = {
 export type ApplyPatchResult = {
 	summaries: string[];
 	appliedFiles: string[];
+	appliedOperationIndexes: number[];
 	failures: ApplyPatchFailure[];
 	hasPartialSuccess: boolean;
+	notAttemptedFiles: string[];
 	details: {
 		fuzz: number;
 	};
@@ -427,6 +438,9 @@ export function extractPatchedPaths(patchText: string): string[] {
 }
 
 function createPatchDiff(oldContent: string, newContent: string): { diff: string; added: number; removed: number } {
+	if (oldContent === newContent) {
+		return { diff: "", added: 0, removed: 0 };
+	}
 	const parts = Diff.diffLines(oldContent, newContent);
 	const oldLines = oldContent.split("\n");
 	const newLines = newContent.split("\n");
@@ -467,30 +481,19 @@ function createPatchDiff(oldContent: string, newContent: string): { diff: string
 	return { diff: output.join("\n"), added, removed };
 }
 
-async function readExistingFileForPreview(absolutePath: string): Promise<string> {
-	try {
-		return await readFile(absolutePath, "utf-8");
-	} catch (error) {
-		if (hasErrorCode(error, "ENOENT")) {
-			return "";
-		}
-		throw error;
-	}
-}
-
 function formatLineCountSummary(added: number, removed: number): string {
 	return `(+${added} -${removed})`;
 }
 
 function formatPatchFileSummary(file: ApplyPatchPreviewFile, cwd: string): string {
-	if (file.operation === "delete") {
+	if (file.operation === "delete" || (file.operation === "move" && file.added === 0 && file.removed === 0)) {
 		return formatPatchFilePath(file, cwd);
 	}
 	return `${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
 }
 
 function formatPatchFileHeader(file: ApplyPatchPreviewFile, cwd: string): string {
-	return `• ${formatPatchOperation(file.operation)} ${formatPatchFileSummary(file, cwd)}`;
+	return `• ${formatPatchOperation(file)} ${formatPatchFileSummary(file, cwd)}`;
 }
 
 function normalizeDisplayPath(filePath: string): string {
@@ -522,14 +525,39 @@ export function formatPatchFilePath(file: ApplyPatchPreviewFile, cwd: string = p
 	return `${filePath} → ${displayPath(file.movePath, cwd)}`;
 }
 
-function formatPatchOperation(operation: ApplyPatchOperation): string {
-	if (operation === "add") {
+function formatPatchOperation(file: ApplyPatchPreviewFile): string {
+	if (file.operation === "add") {
 		return "Added";
 	}
-	if (operation === "delete") {
+	if (file.operation === "delete") {
 		return "Deleted";
 	}
+	if (file.operation === "move") {
+		return file.added > 0 || file.removed > 0 ? "Moved and edited" : "Moved";
+	}
 	return "Edited";
+}
+
+function formatPatchAggregate(preview: ApplyPatchPreview): string {
+	const actionCount = preview.files.length;
+	const operations = new Set(preview.files.map((file) => file.operation));
+	const hasLineChanges = preview.added > 0 || preview.removed > 0;
+	const counts = hasLineChanges ? ` ${formatLineCountSummary(preview.added, preview.removed)}` : "";
+	if (operations.size !== 1) {
+		return `• Applied ${actionCount} file actions${counts}`;
+	}
+
+	const operation = preview.files[0]?.operation;
+	if (operation === "add") {
+		return `• Added ${actionCount} files${counts}`;
+	}
+	if (operation === "delete") {
+		return `• Deleted ${actionCount} files`;
+	}
+	if (operation === "move") {
+		return `• Moved ${actionCount} files${counts}`;
+	}
+	return `• Edited ${actionCount} files${counts}`;
 }
 
 export function formatPatchPreview(
@@ -553,10 +581,9 @@ export function formatPatchPreview(
 		return lines.join("\n");
 	}
 
-	const noun = "files";
-	lines.push(`• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}`);
+	lines.push(formatPatchAggregate(preview));
 	for (const file of preview.files) {
-		lines.push(`  └ ${formatPatchOperation(file.operation)} ${formatPatchFileSummary(file, cwd)}`);
+		lines.push(`  └ ${formatPatchOperation(file)} ${formatPatchFileSummary(file, cwd)}`);
 		if (expanded && file.diff) {
 			lines.push(
 				...truncatePreview(file.diff)
@@ -580,10 +607,11 @@ function getApplyPatchRenderState(toolCallId: string, cwd: string, patchText: st
 	try {
 		const hunks = parsePatch(patchText);
 		if (hunks.length > 0) {
-			const files = hunks.map((hunk) => {
+			const files = hunks.map((hunk, operationIndex) => {
 				const file = {
 					filePath: hunk.filePath,
-					operation: hunk.type,
+					operation: operationForHunk(hunk),
+					operationIndex,
 					diff: "",
 					added: 0,
 					removed: 0,
@@ -608,6 +636,16 @@ export function clearApplyPatchRenderState(): void {
 }
 
 export function formatInFlightCallText(patchText: string): string {
+	try {
+		const hunks = parsePatch(patchText);
+		if (hunks.length > 0) {
+			const count = hunks.length > 1 ? ` (${hunks.length} actions)` : "";
+			return `Patching${count}: ${hunks.map(displayPathForHunk).join(", ")}`;
+		}
+	} catch {
+		// Fall back to path extraction while the freeform patch is still streaming.
+	}
+
 	const paths = extractPatchedPaths(patchText);
 	if (paths.length === 0) {
 		return "Patching";
@@ -800,13 +838,13 @@ function renderPatchPreview(
 				const header = formatPatchFileHeader(file, cwd);
 				if (!file.diff) {
 					return headerPrefix.length > 0
-						? `${headerPrefix}${formatPatchOperation(file.operation)} ${formatPatchFileSummary(file, cwd)}`
+						? `${headerPrefix}${formatPatchOperation(file)} ${formatPatchFileSummary(file, cwd)}`
 						: header;
 				}
 				const previewDiff = truncatePreview(file.diff);
 				const renderedDiff = renderOpenCodeLikeDiff(previewDiff, file.movePath ?? file.filePath, theme);
 				if (headerPrefix.length > 0) {
-					const nestedHeader = `${headerPrefix}${formatPatchOperation(file.operation)} ${formatPatchFileSummary(file, cwd)}`;
+					const nestedHeader = `${headerPrefix}${formatPatchOperation(file)} ${formatPatchFileSummary(file, cwd)}`;
 					return `${nestedHeader}\n${renderedDiff
 						.split("\n")
 						.map((line) => `    ${line}`)
@@ -820,10 +858,9 @@ function renderPatchPreview(
 				return file ? renderFile(file, "") : "";
 			}
 
-			const noun = "files";
 			const renderedFiles = preview.files.map((file) => renderFile(file, "  └ ")).join("\n");
 			if (renderedFiles.length > 0) {
-				return `• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
+				return `${formatPatchAggregate(preview)}\n${renderedFiles}`;
 			}
 		} catch {
 			// fall back to manual themed line rendering
@@ -861,32 +898,77 @@ function formatPendingPatchPaths(patchText: string): string {
 
 async function createPatchPreview(cwd: string, hunks: ParsedPatch[]): Promise<ApplyPatchPreview> {
 	const files: ApplyPatchPreviewFile[] = [];
-	for (const hunk of hunks) {
+	const virtualFiles = new Map<string, string | undefined>();
+	const readVirtualFile = async (absolutePath: string): Promise<string> => {
+		if (virtualFiles.has(absolutePath)) {
+			const content = virtualFiles.get(absolutePath);
+			if (content === undefined) {
+				throw new PatchApplicationError(`File does not exist after an earlier action: ${absolutePath}`);
+			}
+			return content;
+		}
+		const content = await readFile(absolutePath, "utf-8");
+		virtualFiles.set(absolutePath, content);
+		return content;
+	};
+
+	for (const [operationIndex, hunk] of hunks.entries()) {
 		try {
 			const absolutePath = resolvePatchPath(cwd, hunk.filePath);
 			if (hunk.type === "add") {
-				const oldContent = await readExistingFileForPreview(absolutePath);
-				const diff = createPatchDiff(oldContent, hunk.content);
-				files.push({ filePath: hunk.filePath, operation: oldContent.length > 0 ? "update" : "add", ...diff });
+				const diff = createPatchDiff("", hunk.content);
+				files.push({ filePath: hunk.filePath, operation: "add", operationIndex, ...diff });
+				virtualFiles.set(absolutePath, hunk.content);
 				continue;
 			}
 
 			if (hunk.type === "delete") {
-				files.push({ filePath: hunk.filePath, operation: "delete", diff: "", added: 0, removed: 0 });
+				files.push({
+					filePath: hunk.filePath,
+					operation: "delete",
+					operationIndex,
+					diff: "",
+					added: 0,
+					removed: 0,
+				});
+				virtualFiles.set(absolutePath, undefined);
 				continue;
 			}
 
-			const oldContent = await readFile(absolutePath, "utf-8");
-			const newContent =
-				hunk.chunks.length === 0 ? oldContent : replaceChunks(oldContent, hunk.filePath, hunk.chunks).content;
+			const oldContent = await readVirtualFile(absolutePath);
+			const newContent = replaceChunks(oldContent, hunk.filePath, hunk.chunks).content;
 			const diff = createPatchDiff(oldContent, newContent);
-			const file = { filePath: hunk.filePath, operation: "update", ...diff } satisfies ApplyPatchPreviewFile;
+			const file = {
+				filePath: hunk.filePath,
+				operation: operationForHunk(hunk),
+				operationIndex,
+				...diff,
+			} satisfies ApplyPatchPreviewFile;
 			files.push(hunk.movePath !== undefined ? { ...file, movePath: hunk.movePath } : file);
+			if (hunk.movePath !== undefined) {
+				virtualFiles.set(absolutePath, undefined);
+				virtualFiles.set(resolvePatchPath(cwd, hunk.movePath), newContent);
+			} else {
+				virtualFiles.set(absolutePath, newContent);
+			}
 		} catch {
 			// Keep previews for independently renderable hunks. Execution reports the real failure.
 		}
 	}
 
+	return {
+		files,
+		added: files.reduce((sum, file) => sum + file.added, 0),
+		removed: files.reduce((sum, file) => sum + file.removed, 0),
+	};
+}
+
+function filterPatchPreview(preview: ApplyPatchPreview, operationIndexes: number[]): ApplyPatchPreview | undefined {
+	const applied = new Set(operationIndexes);
+	const files = preview.files.filter((file) => file.operationIndex !== undefined && applied.has(file.operationIndex));
+	if (files.length === 0) {
+		return undefined;
+	}
 	return {
 		files,
 		added: files.reduce((sum, file) => sum + file.added, 0),
@@ -1028,7 +1110,7 @@ function parsePatch(patchText: string): ParsedPatch[] {
 				}
 				chunks.push({ changeContexts, oldLines, newLines, isEndOfFile });
 			}
-			if (chunks.length === 0 && !movePath) {
+			if (chunks.length === 0) {
 				throw new PatchParseError(`Update file hunk for path '${filePath}' is empty`);
 			}
 
@@ -1182,31 +1264,40 @@ async function applyParsedPatchDetailed(
 ): Promise<ApplyPatchResult> {
 	const summaries: string[] = [];
 	const appliedFiles: string[] = [];
+	const appliedOperationIndexes: number[] = [];
 	const failures: ApplyPatchFailure[] = [];
+	const notAttemptedFiles: string[] = [];
 	let fuzz = 0;
 
-	for (const hunk of hunks) {
+	for (const [operationIndex, hunk] of hunks.entries()) {
 		try {
 			const { summary, appliedFile, fuzz: hunkFuzz } = await applySingleHunk(cwd, hunk);
 			summaries.push(summary);
 			appliedFiles.push(appliedFile);
+			appliedOperationIndexes.push(operationIndex);
 			fuzz += hunkFuzz;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			failures.push({ filePath: hunk.filePath, operation: hunk.type, message });
+			failures.push({ filePath: hunk.filePath, operation: operationForHunk(hunk), message });
+			notAttemptedFiles.push(...hunks.slice(operationIndex + 1).map(displayPathForHunk));
 		}
 		await notifyApplyPatchProgress(onProgress, {
 			applied: appliedFiles.length,
 			failed: failures.length,
 			total: hunks.length,
 		});
+		if (failures.length > 0) {
+			break;
+		}
 	}
 
 	const result: ApplyPatchResult = {
 		summaries,
 		appliedFiles,
+		appliedOperationIndexes,
 		failures,
 		hasPartialSuccess: appliedFiles.length > 0 && failures.length > 0,
+		notAttemptedFiles,
 		details: { fuzz },
 	};
 	return result;
@@ -1224,6 +1315,9 @@ function formatApplyPatchFailure(result: ApplyPatchResult): string {
 		const message = failure.message.replaceAll("\n", "\n  ");
 		lines.push(`- ${failure.filePath} (${failure.operation}): ${message}`);
 	}
+	if (result.notAttemptedFiles.length > 0) {
+		lines.push(`Not attempted: ${result.notAttemptedFiles.join(", ")}`);
+	}
 	return lines.join("\n");
 }
 
@@ -1232,19 +1326,25 @@ export async function applyPatch(cwd: string, patchText: string): Promise<string
 
 	const summaries: string[] = [];
 	const appliedFiles: string[] = [];
-	for (const hunk of hunks) {
+	for (const [operationIndex, hunk] of hunks.entries()) {
 		try {
 			const { summary, appliedFile } = await applySingleHunk(cwd, hunk);
 			summaries.push(summary);
 			appliedFiles.push(appliedFile);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			const failure = { filePath: hunk.filePath, operation: hunk.type, message } satisfies ApplyPatchFailure;
+			const failure = {
+				filePath: hunk.filePath,
+				operation: operationForHunk(hunk),
+				message,
+			} satisfies ApplyPatchFailure;
 			const result: ApplyPatchResult = {
 				summaries,
 				appliedFiles,
+				appliedOperationIndexes: hunks.slice(0, operationIndex).map((_, index) => index),
 				failures: [failure],
 				hasPartialSuccess: appliedFiles.length > 0,
+				notAttemptedFiles: hunks.slice(operationIndex + 1).map(displayPathForHunk),
 				details: { fuzz: 0 },
 			};
 			throw new ApplyPatchError(message, result);
@@ -1431,16 +1531,17 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 					});
 				},
 			);
+			const settledPreview = preview ? filterPatchPreview(preview, result.appliedOperationIndexes) : undefined;
 			if (result.failures.length > 0) {
 				return {
 					content: [{ type: "text", text: formatApplyPatchFailure(result) }],
-					details: preview ? { preview, result } : { result },
+					details: settledPreview ? { preview: settledPreview, result } : { result },
 				};
 			}
 
 			return {
 				content: [{ type: "text", text: result.summaries.join("\n") }],
-				details: preview ? { preview, result } : { result },
+				details: settledPreview ? { preview: settledPreview, result } : { result },
 			};
 		},
 		renderCall(args, theme, context) {

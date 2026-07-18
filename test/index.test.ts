@@ -310,7 +310,7 @@ describe("pi-apply-patch", () => {
 		if (!update) {
 			throw new Error("apply_patch did not emit a pending update");
 		}
-		expect(update.text).toContain("Applying patch (0/2)...\n• Edited 2 files (+2 -1)");
+		expect(update.text).toContain("Applying patch (0/2)...\n• Applied 2 file actions (+2 -1)");
 		expect(update.text).toContain("sample.txt (+1 -1)");
 		expect(update.text).toContain("-1 before");
 		expect(update.text).toContain("+1 after");
@@ -326,7 +326,7 @@ describe("pi-apply-patch", () => {
 		);
 		const rendered = component?.render(120).join("\n") ?? "";
 		expect(rendered).toContain("Applying patch");
-		expect(rendered).toContain("• Edited 2 files (+2 -1)");
+		expect(rendered).toContain("• Applied 2 file actions (+2 -1)");
 		expect(rendered).toContain("sample.txt (+1 -1)");
 		expect(rendered).toContain("+1 after");
 		expect(rendered).not.toContain("Index:");
@@ -389,7 +389,7 @@ describe("pi-apply-patch", () => {
 
 		// then
 		expect(result.details?.preview?.files).toEqual([
-			{ filePath: "delete-me.txt", operation: "delete", diff: "", added: 0, removed: 0 },
+			{ filePath: "delete-me.txt", operation: "delete", operationIndex: 0, diff: "", added: 0, removed: 0 },
 		]);
 		expect(rendered).toContain("• Deleted delete-me.txt");
 		expect(rendered).not.toContain("(+0 -0)");
@@ -553,7 +553,7 @@ describe("pi-apply-patch", () => {
 		expect(await readFile(path.join(directory, "second.txt"), "utf-8")).toBe("TWO\n");
 	});
 
-	it("#given add patch overwriting existing file #when started #then pending diff shows removed content", async () => {
+	it("#given add patch overwriting existing file #when started #then preview reflects the declared add action", async () => {
 		// given
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "existing.txt"), "old\n", "utf-8");
@@ -578,8 +578,8 @@ describe("pi-apply-patch", () => {
 		);
 
 		// then
-		expect(updates[0]).toContain("• Edited existing.txt (+1 -1)");
-		expect(updates[0]).toContain("-1 old");
+		expect(updates[0]).toContain("• Added existing.txt (+1 -0)");
+		expect(updates[0]).not.toContain("-1 old");
 		expect(updates[0]).toContain("+1 new");
 		expect(await readFile(path.join(directory, "existing.txt"), "utf-8")).toBe("new\n");
 	});
@@ -749,10 +749,12 @@ EOF`;
 	it("#given rename-only codex patch #when executed #then moves file without changing content", async () => {
 		// given
 		const directory = await createTempDirectory();
-		await writeFile(path.join(directory, "old.txt"), "no trailing newline", "utf-8");
+		await writeFile(path.join(directory, "old.txt"), "content\n", "utf-8");
 		const patch = `*** Begin Patch
 *** Update File: old.txt
 *** Move to: new.txt
+@@
+ content
 *** End Patch`;
 
 		// when
@@ -760,7 +762,83 @@ EOF`;
 
 		// then
 		await expect(readFile(path.join(directory, "old.txt"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
-		expect(await readFile(path.join(directory, "new.txt"), "utf-8")).toBe("no trailing newline");
+		expect(await readFile(path.join(directory, "new.txt"), "utf-8")).toBe("content\n");
+	});
+
+	it("#given an empty move update #when parsed #then rejects it like the official binary", async () => {
+		// given
+		const directory = await createTempDirectory();
+		await writeFile(path.join(directory, "old.txt"), "content\n", "utf-8");
+		const patch = `*** Begin Patch
+*** Update File: old.txt
+*** Move to: new.txt
+*** End Patch`;
+
+		// when / then
+		await expect(applyPatch(directory, patch)).rejects.toThrow("Update file hunk for path 'old.txt' is empty");
+		expect(await readFile(path.join(directory, "old.txt"), "utf-8")).toBe("content\n");
+	});
+
+	it("#given repeated updates to one path #when previewed #then evaluates actions sequentially", async () => {
+		// given
+		const directory = await createTempDirectory();
+		await writeFile(path.join(directory, "sample.txt"), "one\ntwo\n", "utf-8");
+		const patch = `*** Begin Patch
+*** Update File: sample.txt
+@@
+-one
++ONE
+*** Update File: sample.txt
+@@
+-two
++TWO
+*** End Patch`;
+
+		// when
+		const result = await createApplyPatchTool().execute(
+			"apply-patch-repeated-update-test",
+			{ input: patch },
+			undefined,
+			undefined,
+			{ cwd: directory } as never,
+		);
+
+		// then
+		expect(result.details?.preview?.files).toHaveLength(2);
+		expect(result.details?.preview?.files[0]?.diff).toContain("+1 ONE");
+		expect(result.details?.preview?.files[1]?.diff).toContain("+2 TWO");
+		expect(await readFile(path.join(directory, "sample.txt"), "utf-8")).toBe("ONE\nTWO\n");
+	});
+
+	it("#given delete then add on one path #when rendered #then preserves both declared actions", async () => {
+		// given
+		const directory = await createTempDirectory();
+		await writeFile(path.join(directory, "replace.txt"), "old\n", "utf-8");
+		const patch = `*** Begin Patch
+*** Delete File: replace.txt
+*** Add File: replace.txt
++new
+*** End Patch`;
+		const tool = createApplyPatchTool();
+
+		// when
+		const result = await tool.execute("apply-patch-replace-test", { input: patch }, undefined, undefined, {
+			cwd: directory,
+		} as never);
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: false, isPartial: false },
+			identityTheme as never,
+			{ cwd: directory, toolCallId: "apply-patch-replace-test", args: { input: patch } } as never,
+		);
+		const rendered = component?.render(160).join("\n") ?? "";
+
+		// then
+		expect(rendered).toContain("• Applied 2 file actions (+1 -0)");
+		expect(rendered).toContain("└ Deleted replace.txt");
+		expect(rendered).toContain("└ Added replace.txt (+1 -0)");
+		expect(rendered).not.toContain("└ Edited replace.txt");
+		expect(await readFile(path.join(directory, "replace.txt"), "utf-8")).toBe("new\n");
 	});
 
 	it("#given absolute path outside cwd #when executed #then applies patch", async () => {
@@ -834,11 +912,12 @@ EOF`;
 		await expect(applyPatch(directory, patch)).rejects.toThrow("Failed to find expected lines in modify.txt");
 	});
 
-	it("#given partial patch failure #when applying detailed #then accumulates applied and failed files", async () => {
+	it("#given partial patch failure #when applying detailed #then stops before later actions", async () => {
 		// given
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "ok.txt"), "before\n", "utf-8");
 		await writeFile(path.join(directory, "broken.txt"), "line\n", "utf-8");
+		await writeFile(path.join(directory, "later.txt"), "later before\n", "utf-8");
 		const patch = `*** Begin Patch
 *** Update File: ok.txt
 @@
@@ -848,6 +927,10 @@ EOF`;
 @@
 -missing
 +changed
+*** Update File: later.txt
+@@
+-later before
++later after
 *** End Patch`;
 
 		// when
@@ -855,9 +938,12 @@ EOF`;
 
 		// then
 		expect(result.appliedFiles).toEqual(["ok.txt"]);
+		expect(result.appliedOperationIndexes).toEqual([0]);
 		expect(result.failures).toHaveLength(1);
 		expect(result.failures[0]?.filePath).toBe("broken.txt");
 		expect(result.failures[0]?.message).toContain("Failed to find expected lines in broken.txt");
+		expect(result.notAttemptedFiles).toEqual(["later.txt"]);
+		expect(await readFile(path.join(directory, "later.txt"), "utf-8")).toBe("later before\n");
 	});
 
 	it("#given partial patch failure #when applying compat api #then fails fast after first error", async () => {
@@ -910,6 +996,7 @@ EOF`;
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "ok.txt"), "before\n", "utf-8");
 		await writeFile(path.join(directory, "broken.txt"), "line\n", "utf-8");
+		await writeFile(path.join(directory, "later.txt"), "later before\n", "utf-8");
 		const patch = `*** Begin Patch
 *** Update File: ok.txt
 @@
@@ -919,6 +1006,10 @@ EOF`;
 @@
 -missing
 +changed
+*** Update File: later.txt
+@@
+-later before
++later after
 *** End Patch`;
 
 		// when
@@ -931,6 +1022,7 @@ EOF`;
 		expect(text).toContain("apply_patch partially failed.");
 		expect(text).toContain("Applied files: ok.txt");
 		expect(text).toContain("Failed:\n- broken.txt (update): Failed to find expected lines in broken.txt:\n  missing");
+		expect(text).toContain("Not attempted: later.txt");
 		expect(text).not.toContain("MUST read");
 		expect(text).not.toContain("MUST NOT reread");
 		expect(result.details?.preview).toBeDefined();
@@ -944,6 +1036,7 @@ EOF`;
 		const rendered = component?.render(160).join("\n") ?? "";
 		expect(rendered).toContain("Patch partially failed");
 		expect(rendered).toContain("• Edited ok.txt (+1 -1)");
+		expect(rendered).not.toContain("later after");
 		expect(rendered).toContain("broken.txt (update): Failed to find expected lines");
 	});
 
