@@ -1020,7 +1020,7 @@ EOF`;
 		// then
 		const text = result.content.find((block) => block.type === "text")?.text ?? "";
 		expect(text).toContain("apply_patch partially failed.");
-		expect(text).toContain("Applied files: ok.txt");
+		expect(text).toContain("Applied actions:\n- update: ok.txt");
 		expect(text).toContain("Failed:\n- broken.txt (update): Failed to find expected lines in broken.txt:\n  missing");
 		expect(text).toContain("Not attempted: later.txt");
 		expect(text).not.toContain("MUST read");
