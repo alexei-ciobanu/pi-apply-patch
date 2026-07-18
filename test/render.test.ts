@@ -388,6 +388,43 @@ describe("render helpers", () => {
 		expect(rendered).toContain("src/bar.ts (update): context mismatch");
 	});
 
+	it("#given a complete failure without a preview #when rendering result #then uses an error shell", () => {
+		// given
+		const tool = createApplyPatchTool();
+		const result = {
+			content: [
+				{
+					type: "text" as const,
+					text: "apply_patch failed.\nNo file actions were applied.\nFailed:\n- missing.txt (update): ENOENT",
+				},
+			],
+			details: {
+				result: {
+					summaries: [],
+					appliedFiles: [],
+					failures: [{ filePath: "missing.txt", operation: "update" as const, message: "ENOENT" }],
+					hasPartialSuccess: false,
+					details: { fuzz: 0 },
+				},
+			},
+		};
+
+		// when
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: false, isPartial: false },
+			markerTheme as never,
+			{ cwd: "/workspace/project", toolCallId: "result-complete-failure", args: { input: "" } } as never,
+		);
+		const rendered = component?.render(200).join("\n") ?? "";
+
+		// then
+		expect(rendered).toContain("<bg:toolErrorBg>");
+		expect(rendered).toContain("<bold>Patch failed</bold>");
+		expect(rendered).toContain("No file actions were applied.");
+		expect(rendered).toContain("missing.txt (update): ENOENT");
+	});
+
 	it("#given settled multi-file preview #when tool output is globally collapsed #then shows every diff", () => {
 		// given
 		const tool = createApplyPatchTool();

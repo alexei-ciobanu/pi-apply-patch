@@ -1440,9 +1440,9 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 		renderResult(result, options, theme, context) {
 			const component = new Container();
 			const preview = result.details?.preview;
+			const patchResult = result.details?.result;
+			const hasFailures = (patchResult?.failures.length ?? 0) > 0;
 			if (preview) {
-				const patchResult = result.details?.result;
-				const hasFailures = (patchResult?.failures.length ?? 0) > 0;
 				const bgName = options.isPartial ? "toolPendingBg" : hasFailures ? "toolErrorBg" : "toolSuccessBg";
 				const progress = result.details?.progress;
 				const title = progress
@@ -1481,6 +1481,18 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 				.map((block) => block.text)
 				.filter((value) => typeof value === "string" && value.length > 0)
 				.join("\n");
+			if (hasFailures) {
+				const title = patchResult?.hasPartialSuccess ? "Patch partially failed" : "Patch failed";
+				const failureDetails = text.split("\n").slice(1).join("\n");
+				const box = new Box(1, 1, (value: string) => applyLayeredBackground(theme, "toolErrorBg", value));
+				box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
+				if (failureDetails) {
+					box.addChild(new Spacer(1));
+					box.addChild(new Text(theme.fg("error", failureDetails), 0, 0));
+				}
+				component.addChild(box);
+				return component;
+			}
 			if (text) {
 				component.addChild(new Text(theme.fg("toolOutput", text), 0, 0));
 			}
