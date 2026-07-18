@@ -6,6 +6,13 @@
 
 - Initial standalone `apply_patch` pi extension.
 
+### Changed
+
+- Refresh the development lockfile to Pi 0.80.10 and current compatible tooling with a clean security audit.
+- Point installation and repository metadata at the maintained fork.
+- Update GitHub Actions to checkout and setup-node v7.
+- Limit published tarballs to runtime source and user-facing documentation.
+
 ### Fixed
 
 - Resolve absolute, parent-relative, and symlinked patch paths with normal Node path semantics.
