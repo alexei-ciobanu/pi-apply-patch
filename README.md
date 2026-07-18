@@ -39,14 +39,14 @@ The OpenAI Responses API receives this as a custom freeform grammar tool, not as
 The package targets the [`pi`](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) coding agent. Pi loads extensions from `~/.pi/agent/extensions/`, project `.pi/extensions/`, or via the `--extension` / `-e` CLI flag.
 
 ```bash
-# 1. From npm (once published)
+# 1. From the maintained git fork
+pi install git:github.com/alexei-ciobanu/pi-apply-patch
+
+# 2. From upstream npm (once published)
 pi install npm:@code-yeongyu/pi-apply-patch
 
-# 2. From git
-pi install git:github.com/code-yeongyu/pi-apply-patch
-
 # 3. Manual placement
-git clone https://github.com/code-yeongyu/pi-apply-patch ~/.pi/agent/extensions/pi-apply-patch
+git clone https://github.com/alexei-ciobanu/pi-apply-patch ~/.pi/agent/extensions/pi-apply-patch
 cd ~/.pi/agent/extensions/pi-apply-patch && npm install
 
 # 4. Dev / one-shot test
@@ -71,6 +71,8 @@ The test suite uses vitest. TypeScript is strict, Node-only, and uses ESM import
 ## Origin
 
 Ported from `packages/coding-agent/src/core/extensions/builtin/gpt-apply-patch.ts` in `code-yeongyu/senpi-mono`. The patch grammar and tool descriptions mirror Codex.
+
+This repository is Alexei Ciobanu's maintained fork of [`code-yeongyu/pi-apply-patch`](https://github.com/code-yeongyu/pi-apply-patch). Upstream remains the attribution source; this fork carries the deployed compatibility and TUI fixes.
 
 ## License
 
