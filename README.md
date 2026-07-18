@@ -39,17 +39,14 @@ The OpenAI Responses API receives this as a custom freeform grammar tool, not as
 The package targets the [`pi`](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) coding agent. Pi loads extensions from `~/.pi/agent/extensions/`, project `.pi/extensions/`, or via the `--extension` / `-e` CLI flag.
 
 ```bash
-# 1. From the maintained git fork
+# 1. Install the maintained fork
 pi install git:github.com/alexei-ciobanu/pi-apply-patch
 
-# 2. From upstream npm (once published)
-pi install npm:@code-yeongyu/pi-apply-patch
-
-# 3. Manual placement
+# 2. Or clone the maintained fork manually
 git clone https://github.com/alexei-ciobanu/pi-apply-patch ~/.pi/agent/extensions/pi-apply-patch
 cd ~/.pi/agent/extensions/pi-apply-patch && npm install
 
-# 4. Dev / one-shot test
+# 3. Development / one-shot test
 pi -e /path/to/pi-apply-patch/src/index.ts
 ```
 
