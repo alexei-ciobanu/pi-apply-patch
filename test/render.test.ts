@@ -298,6 +298,41 @@ describe("render helpers", () => {
 		expect(rendered).toContain("<fg:toolDiffContext> </fg:toolDiffContext><fg:muted>2</fg:muted> same");
 	});
 
+	it("#given an unpaired removed line #when rendering a delete #then colors the entire content as removed", () => {
+		// given
+		const tool = createApplyPatchTool();
+		const result = {
+			content: [{ type: "text" as const, text: "Applied patch" }],
+			details: {
+				preview: {
+					files: [
+						{
+							filePath: "sample.txt",
+							operation: "delete" as const,
+							diff: "-1 deleted content",
+							added: 0,
+							removed: 1,
+						},
+					],
+					added: 0,
+					removed: 1,
+				},
+			},
+		};
+
+		// when
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: false, isPartial: false },
+			markerTheme as never,
+			{ cwd: "/workspace/project", toolCallId: "result-delete", args: { input: "" } } as never,
+		);
+		const rendered = component?.render(200).join("\n") ?? "";
+
+		// then
+		expect(rendered).toContain("<fg:toolDiffRemoved>deleted content</fg:toolDiffRemoved>");
+	});
+
 	it("#given partial progress preview #when rendering result #then shows realtime progress in pending widget", () => {
 		// given
 		const tool = createApplyPatchTool();

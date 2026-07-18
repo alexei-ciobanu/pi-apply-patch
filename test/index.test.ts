@@ -7,6 +7,7 @@ import {
 	type ApplyPatchExtensionAPI,
 	applyPatch,
 	applyPatchDetailed,
+	applyPatchFailureErrorOverride,
 	createApplyPatchTool,
 	extractPatchedPaths,
 	type FreeformToolFormat,
@@ -100,18 +101,37 @@ afterEach(async () => {
 });
 
 describe("pi-apply-patch", () => {
+	it("#given an apply_patch result #when it has failures #then marks the tool result as an error", () => {
+		// given
+		const failedDetails = { result: { failures: [{ filePath: "bad.txt" }] } };
+		const successfulDetails = { result: { failures: [] } };
+
+		// when / then
+		expect(applyPatchFailureErrorOverride({ details: failedDetails, toolName: "apply_patch" })).toEqual({
+			isError: true,
+		});
+		expect(applyPatchFailureErrorOverride({ details: successfulDetails, toolName: "apply_patch" })).toBeUndefined();
+		expect(applyPatchFailureErrorOverride({ details: failedDetails, toolName: "bash" })).toBeUndefined();
+	});
+
 	it("#given extension #when registered #then exposes codex freeform apply_patch tool", () => {
 		// given
 		let capturedToolName: string | undefined;
 		let capturedDescription: string | undefined;
 		let capturedFreeform: FreeformToolFormat | undefined;
+		const registeredEvents: string[] = [];
 		const extensionApi = {
 			registerTool(tool: ReturnType<typeof createApplyPatchTool>) {
 				capturedToolName = tool.name;
 				capturedDescription = tool.description;
 				capturedFreeform = tool.freeform;
 			},
-			on() {},
+			on(...args: unknown[]) {
+				const eventName = args[0];
+				if (typeof eventName === "string") {
+					registeredEvents.push(eventName);
+				}
+			},
 			getActiveTools() {
 				return ["read", "write", "edit"];
 			},
@@ -129,6 +149,7 @@ describe("pi-apply-patch", () => {
 			syntax: "lark",
 			definition: APPLY_PATCH_LARK_GRAMMAR,
 		});
+		expect(registeredEvents).toContain("tool_result");
 	});
 
 	it("#given GPT model after reload with apply_patch already active #when session starts #then keeps apply_patch active", async () => {
