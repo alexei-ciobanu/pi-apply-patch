@@ -222,7 +222,7 @@ describe("render helpers", () => {
 		expect(rendered).toContain("apply_patch: Patching (2 files): src/a.ts, src/b.ts");
 	});
 
-	it("#given preview #when rendering result collapsed #then shows headers without diff lines", () => {
+	it("#given settled preview #when tool output is globally collapsed #then still shows diff lines", () => {
 		// given
 		const tool = createApplyPatchTool();
 		const result = {
@@ -255,7 +255,8 @@ describe("render helpers", () => {
 
 		// then
 		expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
-		expect(rendered).not.toContain("+1 new");
+		expect(rendered).toContain("-1 old");
+		expect(rendered).toContain("+1 new");
 	});
 
 	it("#given expanded preview #when rendering result #then uses OpenCode-like highlighted diff rows", () => {
@@ -387,7 +388,7 @@ describe("render helpers", () => {
 		expect(rendered).toContain("src/bar.ts (update): context mismatch");
 	});
 
-	it("#given multi-file preview #when rendering result collapsed #then shows grouped summary", () => {
+	it("#given settled multi-file preview #when tool output is globally collapsed #then shows every diff", () => {
 		// given
 		const tool = createApplyPatchTool();
 		const result = {
@@ -417,7 +418,8 @@ describe("render helpers", () => {
 		expect(rendered).toContain("• Edited 2 files (+2 -0)");
 		expect(rendered).toContain("└ src/a.ts (+1 -0)");
 		expect(rendered).toContain("└ src/b.ts (+1 -0)");
-		expect(rendered).not.toContain("+1 one");
+		expect(rendered).toContain("+1 one");
+		expect(rendered).toContain("+1 two");
 	});
 
 	it("#given highlighted diff row #when rendering result in success box #then outer background resumes after row reset", () => {

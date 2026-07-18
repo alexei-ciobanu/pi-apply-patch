@@ -1457,8 +1457,7 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 				const box = new Box(1, 1, (text: string) => applyLayeredBackground(theme, bgName, text));
 				box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
 				box.addChild(new Spacer(1));
-				const expanded = options.isPartial ? true : (options.expanded ?? true);
-				box.addChild(new Text(renderPatchPreview(preview, context.cwd, theme, expanded), 0, 0));
+				box.addChild(new Text(renderPatchPreview(preview, context.cwd, theme, true), 0, 0));
 				if (hasFailures) {
 					const failureDetails = result.content
 						.filter((block) => block.type === "text")
