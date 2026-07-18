@@ -483,6 +483,9 @@ function formatLineCountSummary(added: number, removed: number): string {
 }
 
 function formatPatchFileSummary(file: ApplyPatchPreviewFile, cwd: string): string {
+	if (file.operation === "delete") {
+		return formatPatchFilePath(file, cwd);
+	}
 	return `${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
 }
 
@@ -553,7 +556,7 @@ export function formatPatchPreview(
 	const noun = "files";
 	lines.push(`• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}`);
 	for (const file of preview.files) {
-		lines.push(`  └ ${formatPatchFileSummary(file, cwd)}`);
+		lines.push(`  └ ${formatPatchOperation(file.operation)} ${formatPatchFileSummary(file, cwd)}`);
 		if (expanded && file.diff) {
 			lines.push(
 				...truncatePreview(file.diff)
@@ -796,12 +799,14 @@ function renderPatchPreview(
 			const renderFile = (file: ApplyPatchPreviewFile, headerPrefix: string): string => {
 				const header = formatPatchFileHeader(file, cwd);
 				if (!file.diff) {
-					return headerPrefix.length > 0 ? `${headerPrefix}${formatPatchFileSummary(file, cwd)}` : header;
+					return headerPrefix.length > 0
+						? `${headerPrefix}${formatPatchOperation(file.operation)} ${formatPatchFileSummary(file, cwd)}`
+						: header;
 				}
 				const previewDiff = truncatePreview(file.diff);
 				const renderedDiff = renderOpenCodeLikeDiff(previewDiff, file.movePath ?? file.filePath, theme);
 				if (headerPrefix.length > 0) {
-					const nestedHeader = `${headerPrefix}${formatPatchFileSummary(file, cwd)}`;
+					const nestedHeader = `${headerPrefix}${formatPatchOperation(file.operation)} ${formatPatchFileSummary(file, cwd)}`;
 					return `${nestedHeader}\n${renderedDiff
 						.split("\n")
 						.map((line) => `    ${line}`)
@@ -867,9 +872,7 @@ async function createPatchPreview(cwd: string, hunks: ParsedPatch[]): Promise<Ap
 			}
 
 			if (hunk.type === "delete") {
-				const oldContent = await readFile(absolutePath, "utf-8");
-				const diff = createPatchDiff(oldContent, "");
-				files.push({ filePath: hunk.filePath, operation: "delete", ...diff });
+				files.push({ filePath: hunk.filePath, operation: "delete", diff: "", added: 0, removed: 0 });
 				continue;
 			}
 
@@ -1277,7 +1280,7 @@ async function createPendingPatchUpdate(
 		}
 
 		const preview = await createPatchPreview(cwd, hunks);
-		if (preview.files.some((file) => file.diff.trim().length > 0)) {
+		if (preview.files.length > 0) {
 			const details: ApplyPatchToolDetails = { preview };
 			if (progress) details.progress = progress;
 			return { text: `${title}\n${formatPatchPreview(preview, cwd)}`, details };
@@ -1482,7 +1485,7 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 						.join("\n");
 					if (failureDetails) {
 						box.addChild(new Spacer(1));
-						box.addChild(new Text(theme.fg("error", failureDetails), 0, 0));
+						box.addChild(new Text(theme.fg("toolOutput", failureDetails), 0, 0));
 					}
 				}
 				component.addChild(box);
@@ -1501,7 +1504,7 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 				box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
 				if (failureDetails) {
 					box.addChild(new Spacer(1));
-					box.addChild(new Text(theme.fg("error", failureDetails), 0, 0));
+					box.addChild(new Text(theme.fg("toolOutput", failureDetails), 0, 0));
 				}
 				component.addChild(box);
 				return component;

@@ -314,7 +314,7 @@ describe("pi-apply-patch", () => {
 		expect(update.text).toContain("sample.txt (+1 -1)");
 		expect(update.text).toContain("-1 before");
 		expect(update.text).toContain("+1 after");
-		expect(update.text).toContain("created.txt (+1 -0)");
+		expect(update.text).toContain("Added created.txt (+1 -0)");
 		expect(update.text).toContain("+1 created");
 		expect(update.text).not.toContain("Index:");
 
@@ -363,6 +363,38 @@ describe("pi-apply-patch", () => {
 		expect(rendered).toContain("-1 before");
 		expect(rendered).toContain("+1 after");
 		expect(await readFile(path.join(directory, "sample.txt"), "utf-8")).toBe("after\n");
+	});
+
+	it("#given a delete patch #when previewed and applied #then reports only the requested file deletion", async () => {
+		// given
+		const directory = await createTempDirectory();
+		const deletedContent = "content that the agent never included in its patch\n".repeat(100);
+		await writeFile(path.join(directory, "delete-me.txt"), deletedContent, "utf-8");
+		const patch = `*** Begin Patch
+*** Delete File: delete-me.txt
+*** End Patch`;
+		const tool = createApplyPatchTool();
+
+		// when
+		const result = await tool.execute("apply-patch-delete-preview-test", { input: patch }, undefined, undefined, {
+			cwd: directory,
+		} as never);
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: false, isPartial: false },
+			identityTheme as never,
+			{ cwd: directory, toolCallId: "apply-patch-delete-preview-test", args: { input: patch } } as never,
+		);
+		const rendered = component?.render(120).join("\n") ?? "";
+
+		// then
+		expect(result.details?.preview?.files).toEqual([
+			{ filePath: "delete-me.txt", operation: "delete", diff: "", added: 0, removed: 0 },
+		]);
+		expect(rendered).toContain("• Deleted delete-me.txt");
+		expect(rendered).not.toContain("(+0 -0)");
+		expect(rendered).not.toContain("content that the agent never included");
+		await expect(readFile(path.join(directory, "delete-me.txt"), "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("#given nested cwd #when previewing absolute workspace path #then formats relative to cwd", async () => {

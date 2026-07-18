@@ -298,7 +298,7 @@ describe("render helpers", () => {
 		expect(rendered).toContain("<fg:toolDiffContext> </fg:toolDiffContext><fg:muted>2</fg:muted> same");
 	});
 
-	it("#given an unpaired removed line #when rendering a delete #then colors the entire content as removed", () => {
+	it("#given an unpaired removed line #when rendering a patch #then colors the entire content as removed", () => {
 		// given
 		const tool = createApplyPatchTool();
 		const result = {
@@ -308,7 +308,7 @@ describe("render helpers", () => {
 					files: [
 						{
 							filePath: "sample.txt",
-							operation: "delete" as const,
+							operation: "update" as const,
 							diff: "-1 deleted content",
 							added: 0,
 							removed: 1,
@@ -420,6 +420,7 @@ describe("render helpers", () => {
 		expect(rendered).toContain("<bg:toolErrorBg>");
 		expect(rendered).toContain("<bold>Patch partially failed</bold>");
 		expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
+		expect(rendered).toContain("<fg:toolOutput>Applied files: src/foo.ts");
 		expect(rendered).toContain("src/bar.ts (update): context mismatch");
 	});
 
@@ -456,7 +457,7 @@ describe("render helpers", () => {
 		// then
 		expect(rendered).toContain("<bg:toolErrorBg>");
 		expect(rendered).toContain("<bold>Patch failed</bold>");
-		expect(rendered).toContain("No file actions were applied.");
+		expect(rendered).toContain("<fg:toolOutput>No file actions were applied.");
 		expect(rendered).toContain("missing.txt (update): ENOENT");
 	});
 
@@ -488,8 +489,8 @@ describe("render helpers", () => {
 
 		// then
 		expect(rendered).toContain("• Edited 2 files (+2 -0)");
-		expect(rendered).toContain("└ src/a.ts (+1 -0)");
-		expect(rendered).toContain("└ src/b.ts (+1 -0)");
+		expect(rendered).toContain("└ Edited src/a.ts (+1 -0)");
+		expect(rendered).toContain("└ Edited src/b.ts (+1 -0)");
 		expect(rendered).toContain("+1 one");
 		expect(rendered).toContain("+1 two");
 	});
