@@ -99,17 +99,11 @@ export type ApplyPatchFailure = {
 	message: string;
 };
 
-export type ApplyPatchRecoveryInstructions = {
-	mustReadFiles: string[];
-	mustNotReadFiles: string[];
-};
-
 export type ApplyPatchResult = {
 	summaries: string[];
 	appliedFiles: string[];
 	failures: ApplyPatchFailure[];
 	hasPartialSuccess: boolean;
-	recoveryInstructions: ApplyPatchRecoveryInstructions;
 	details: {
 		fuzz: number;
 	};
@@ -866,30 +860,31 @@ function formatPendingPatchPaths(patchText: string): string {
 async function createPatchPreview(cwd: string, hunks: ParsedPatch[]): Promise<ApplyPatchPreview> {
 	const files: ApplyPatchPreviewFile[] = [];
 	for (const hunk of hunks) {
-		const absolutePath = await resolvePatchPath(cwd, hunk.filePath);
-		if (hunk.type === "add") {
-			const oldContent = await readExistingFileForPreview(absolutePath);
-			const diff = createPatchDiff(oldContent, hunk.content);
-			files.push({ filePath: hunk.filePath, operation: oldContent.length > 0 ? "update" : "add", ...diff });
-			continue;
-		}
+		try {
+			const absolutePath = resolvePatchPath(cwd, hunk.filePath);
+			if (hunk.type === "add") {
+				const oldContent = await readExistingFileForPreview(absolutePath);
+				const diff = createPatchDiff(oldContent, hunk.content);
+				files.push({ filePath: hunk.filePath, operation: oldContent.length > 0 ? "update" : "add", ...diff });
+				continue;
+			}
 
-		if (hunk.type === "delete") {
+			if (hunk.type === "delete") {
+				const oldContent = await readFile(absolutePath, "utf-8");
+				const diff = createPatchDiff(oldContent, "");
+				files.push({ filePath: hunk.filePath, operation: "delete", ...diff });
+				continue;
+			}
+
 			const oldContent = await readFile(absolutePath, "utf-8");
-			const diff = createPatchDiff(oldContent, "");
-			files.push({ filePath: hunk.filePath, operation: "delete", ...diff });
-			continue;
+			const newContent =
+				hunk.chunks.length === 0 ? oldContent : replaceChunks(oldContent, hunk.filePath, hunk.chunks).content;
+			const diff = createPatchDiff(oldContent, newContent);
+			const file = { filePath: hunk.filePath, operation: "update", ...diff } satisfies ApplyPatchPreviewFile;
+			files.push(hunk.movePath !== undefined ? { ...file, movePath: hunk.movePath } : file);
+		} catch {
+			// Keep previews for independently renderable hunks. Execution reports the real failure.
 		}
-
-		const oldContent = await readFile(absolutePath, "utf-8");
-		const newContent =
-			hunk.chunks.length === 0 ? oldContent : replaceChunks(oldContent, hunk.filePath, hunk.chunks).content;
-		if (hunk.movePath) {
-			await resolvePatchPath(cwd, hunk.movePath);
-		}
-		const diff = createPatchDiff(oldContent, newContent);
-		const file = { filePath: hunk.filePath, operation: "update", ...diff } satisfies ApplyPatchPreviewFile;
-		files.push(hunk.movePath !== undefined ? { ...file, movePath: hunk.movePath } : file);
 	}
 
 	return {
@@ -1212,20 +1207,24 @@ async function applyParsedPatchDetailed(
 		appliedFiles,
 		failures,
 		hasPartialSuccess: appliedFiles.length > 0 && failures.length > 0,
-		recoveryInstructions: { mustReadFiles: [], mustNotReadFiles: [] },
 		details: { fuzz },
 	};
-	result.recoveryInstructions = createRecoveryInstructions(result);
 	return result;
 }
 
-function createRecoveryInstructions(
-	result: Pick<ApplyPatchResult, "appliedFiles" | "failures">,
-): ApplyPatchRecoveryInstructions {
-	const mustReadFiles = [...new Set(result.failures.map((failure) => failure.filePath))];
-	const mustReadFileSet = new Set(mustReadFiles);
-	const mustNotReadFiles = [...new Set(result.appliedFiles.filter((filePath) => !mustReadFileSet.has(filePath)))];
-	return { mustReadFiles, mustNotReadFiles };
+function formatApplyPatchFailure(result: ApplyPatchResult): string {
+	const lines = [result.hasPartialSuccess ? "apply_patch partially failed." : "apply_patch failed."];
+	if (result.appliedFiles.length > 0) {
+		lines.push(`Applied files: ${result.appliedFiles.join(", ")}`);
+	} else {
+		lines.push("No file actions were applied.");
+	}
+	lines.push("Failed:");
+	for (const failure of result.failures) {
+		const message = failure.message.replaceAll("\n", "\n  ");
+		lines.push(`- ${failure.filePath} (${failure.operation}): ${message}`);
+	}
+	return lines.join("\n");
 }
 
 export async function applyPatch(cwd: string, patchText: string): Promise<string[]> {
@@ -1246,10 +1245,6 @@ export async function applyPatch(cwd: string, patchText: string): Promise<string
 				appliedFiles,
 				failures: [failure],
 				hasPartialSuccess: appliedFiles.length > 0,
-				recoveryInstructions: createRecoveryInstructions({
-					appliedFiles,
-					failures: [failure],
-				}),
 				details: { fuzz: 0 },
 			};
 			throw new ApplyPatchError(message, result);
@@ -1421,28 +1416,8 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 				},
 			);
 			if (result.failures.length > 0) {
-				const mustReadFiles = result.recoveryInstructions.mustReadFiles;
-				const failed = mustReadFiles.join(", ");
-				const mustReadText = mustReadFiles.join(" and ");
 				return {
-					content: [
-						{
-							type: "text",
-							text: [
-								result.hasPartialSuccess ? "apply_patch partially failed." : "apply_patch failed.",
-								`Failed: ${failed}`,
-								`Recovery: MUST read ${mustReadText} before retrying.`,
-								result.appliedFiles.length > 0
-									? "Earlier file actions in this patch were already applied."
-									: "No file actions were applied.",
-								result.recoveryInstructions.mustNotReadFiles.length > 0
-									? "Recovery: MUST NOT reread other files from this patch unless a specific dependency requires it."
-									: "",
-							]
-								.filter((line) => line.length > 0)
-								.join("\n"),
-						},
-					],
+					content: [{ type: "text", text: formatApplyPatchFailure(result) }],
 					details: preview ? { preview, result } : { result },
 				};
 			}

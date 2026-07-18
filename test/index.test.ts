@@ -804,8 +804,7 @@ EOF`;
 		expect(result.appliedFiles).toEqual(["ok.txt"]);
 		expect(result.failures).toHaveLength(1);
 		expect(result.failures[0]?.filePath).toBe("broken.txt");
-		expect(result.recoveryInstructions.mustReadFiles).toEqual(["broken.txt"]);
-		expect(result.recoveryInstructions.mustNotReadFiles).toEqual(["ok.txt"]);
+		expect(result.failures[0]?.message).toContain("Failed to find expected lines in broken.txt");
 	});
 
 	it("#given partial patch failure #when applying compat api #then fails fast after first error", async () => {
@@ -853,7 +852,7 @@ EOF`;
 		expect(result.details.fuzz).toBe(10001);
 	});
 
-	it("#given apply patch tool partial failure #when executed #then returns recovery instructions text", async () => {
+	it("#given apply patch tool partial failure #when executed #then reports applied files and the real error", async () => {
 		// given
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "ok.txt"), "before\n", "utf-8");
@@ -877,12 +876,22 @@ EOF`;
 		// then
 		const text = result.content.find((block) => block.type === "text")?.text ?? "";
 		expect(text).toContain("apply_patch partially failed.");
-		expect(text).toContain("Failed: broken.txt");
-		expect(text).toContain("Recovery: MUST read broken.txt before retrying.");
-		expect(text).toContain("Earlier file actions in this patch were already applied.");
-		expect(text).toContain(
-			"Recovery: MUST NOT reread other files from this patch unless a specific dependency requires it.",
+		expect(text).toContain("Applied files: ok.txt");
+		expect(text).toContain("Failed:\n- broken.txt (update): Failed to find expected lines in broken.txt:\n  missing");
+		expect(text).not.toContain("MUST read");
+		expect(text).not.toContain("MUST NOT reread");
+		expect(result.details?.preview).toBeDefined();
+
+		const component = createApplyPatchTool().renderResult?.(
+			result,
+			{ expanded: true, isPartial: false },
+			identityTheme as never,
+			{ cwd: directory, toolCallId: "apply-patch-failure-render", args: { input: patch } } as never,
 		);
+		const rendered = component?.render(160).join("\n") ?? "";
+		expect(rendered).toContain("Patch partially failed");
+		expect(rendered).toContain("• Edited ok.txt (+1 -1)");
+		expect(rendered).toContain("broken.txt (update): Failed to find expected lines");
 	});
 
 	it("#given apply patch tool complete failure #when executed #then does not report partial failure", async () => {
@@ -906,6 +915,34 @@ EOF`;
 		expect(text).toContain("apply_patch failed.");
 		expect(text).not.toContain("partially failed");
 		expect(text).toContain("No file actions were applied.");
+		expect(text).toContain("broken.txt (update): Failed to find expected lines in broken.txt");
+		expect(text).not.toContain("MUST read");
+	});
+
+	it("#given a missing update target #when the tool fails #then reports the filesystem error", async () => {
+		// given
+		const directory = await createTempDirectory();
+		const patch = `*** Begin Patch
+*** Update File: missing.txt
+@@
+-before
++after
+*** End Patch`;
+
+		// when
+		const result = await createApplyPatchTool().execute(
+			"apply-patch-missing-file-test",
+			{ input: patch },
+			undefined,
+			undefined,
+			{ cwd: directory } as never,
+		);
+
+		// then
+		const text = result.content.find((block) => block.type === "text")?.text ?? "";
+		expect(text).toContain("missing.txt (update)");
+		expect(text).toContain("ENOENT");
+		expect(text).not.toContain("MUST read");
 	});
 
 	it("#given concurrent patches to different lines in one file #when applied #then preserves both updates", async () => {
