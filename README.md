@@ -8,7 +8,7 @@ The extension registers one LLM-callable tool: `apply_patch`. The tool accepts C
 
 | Case | Result |
 |------|--------|
-| OpenAI GPT model active | replaces `write` and `edit` with `apply_patch` |
+| OpenAI GPT model active, directly or through `pi-model-relay-e2ee` | replaces `write` and `edit` with `apply_patch` |
 | Non-GPT model active | restores the original `write` and `edit` toolset |
 | Raw freeform patch input | accepted and applied |
 | JSON `{ "input": "..." }` patch input | accepted and applied |

@@ -81,6 +81,29 @@ describe("render helpers", () => {
 		expect(preview).toContain("…");
 	});
 
+	it("#given separated changed hunks #when truncating #then represents every hunk that fits", () => {
+		// given
+		const diff = [
+			" 1 before",
+			"-2 first old",
+			"+2 first new",
+			...Array.from({ length: 20 }, (_, index) => ` ${index + 3} context-${index + 3}`),
+			"-23 second old",
+			"+23 second new",
+			" 24 after",
+		].join("\n");
+
+		// when
+		const preview = truncatePreview(diff);
+
+		// then
+		expect(preview).toContain("-2 first old");
+		expect(preview).toContain("+2 first new");
+		expect(preview).toContain("-23 second old");
+		expect(preview).toContain("+23 second new");
+		expect(preview.split("\n").length).toBeLessThanOrEqual(PATCH_PREVIEW_MAX_LINES);
+	});
+
 	it("#given absolute path under cwd #when displaying #then returns relative path", () => {
 		// given
 		const cwd = "/workspace/project";
@@ -151,6 +174,7 @@ describe("render helpers", () => {
 		const rendered = formatPatchPreview(preview);
 
 		// then
+		expect(rendered).not.toContain("Applied patch");
 		expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
 		expect(rendered).toContain("+1 new");
 	});

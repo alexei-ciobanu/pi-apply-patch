@@ -177,6 +177,21 @@ describe("pi-apply-patch", () => {
 		expect(harness.getActiveTools()).toEqual(["read", "apply_patch"]);
 	});
 
+	it("#given relayed OpenAI GPT model #when session starts #then activates apply_patch", async () => {
+		// given
+		const harness = createToolsetTestApi(["read", "edit", "write"]);
+		registerApplyPatchExtension(harness.api);
+
+		// when
+		await harness.trigger("session_start", {
+			provider: "pi-relay-e2ee",
+			id: "openai-codex/gpt-5.6-luna",
+		});
+
+		// then
+		expect(harness.getActiveTools()).toEqual(["read", "apply_patch"]);
+	});
+
 	it("#given non GPT model and no original edit tools #when session starts #then restores standard edit tools", async () => {
 		// given
 		const harness = createToolsetTestApi(["read", "apply_patch"]);
@@ -358,7 +373,7 @@ describe("pi-apply-patch", () => {
 
 		// then
 		expect(result.details?.preview).toBeDefined();
-		expect(rendered).toContain("Applied patch");
+		expect(rendered).not.toContain("Applied patch");
 		expect(rendered).toContain("• Edited sample.txt (+1 -1)");
 		expect(rendered).toContain("-1 before");
 		expect(rendered).toContain("+1 after");
@@ -1217,9 +1232,12 @@ EOF`;
 		expect(extractPatchedPaths(patch)).toEqual(["src/app.ts", "src/new.ts", "src/old.ts", "src/moved.ts"]);
 	});
 
-	it("#given model metadata #when checking GPT activation #then only OpenAI GPT models match", () => {
+	it("#given model metadata #when checking GPT activation #then direct and relayed OpenAI GPT models match", () => {
 		expect(isOpenAIGptModel({ provider: "openai", id: "gpt-5" })).toBe(true);
 		expect(isOpenAIGptModel({ provider: "openai-codex", id: "gpt-5.5" })).toBe(true);
+		expect(isOpenAIGptModel({ provider: "pi-relay-e2ee", id: "openai/gpt-5.6" })).toBe(true);
+		expect(isOpenAIGptModel({ provider: "pi-relay-e2ee", id: "openai-codex/gpt-5.6-luna" })).toBe(true);
+		expect(isOpenAIGptModel({ provider: "pi-relay-e2ee", id: "xai/grok-4.5" })).toBe(false);
 		expect(isOpenAIGptModel({ provider: "openai", id: "o1" })).toBe(false);
 		expect(isOpenAIGptModel({ provider: "anthropic", id: "gpt-5" })).toBe(false);
 	});

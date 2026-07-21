@@ -182,6 +182,7 @@ function hasErrorCode(error: unknown, code: string): boolean {
 }
 
 const GPT_APPLY_PATCH_PROVIDERS = new Set(["openai", "openai-codex", "azure-openai-responses", "github-copilot"]);
+const GPT_APPLY_PATCH_RELAY_PROVIDERS = new Set(["pi-relay-e2ee"]);
 export const PATCH_PREVIEW_MAX_LINES = 16;
 export const PATCH_PREVIEW_MAX_CHARS = 4000;
 const PATCH_PREVIEW_HEAD_LINES = 8;
@@ -212,59 +213,87 @@ function isChangedPreviewLine(line: string): boolean {
 	return /^[+-]\s*\d+\s/.test(line);
 }
 
-function countWindowLines(lines: string[], start: number, end: number): number {
-	return end - start + (start > 0 ? 1 : 0) + (end < lines.length ? 1 : 0);
+function formatSelectedPreviewLines(lines: string[], selectedIndexes: Set<number>): string[] {
+	const indexes = [...selectedIndexes].sort((left, right) => left - right);
+	if (indexes.length === 0) {
+		return [];
+	}
+
+	const previewLines: string[] = [];
+	let previousIndex: number | undefined;
+	for (const index of indexes) {
+		if (previousIndex === undefined ? index > 0 : index > previousIndex + 1) {
+			previewLines.push(PATCH_PREVIEW_TRUNCATION_MARKER);
+		}
+		previewLines.push(lines[index] ?? "");
+		previousIndex = index;
+	}
+	if ((indexes[indexes.length - 1] ?? lines.length) < lines.length - 1) {
+		previewLines.push(PATCH_PREVIEW_TRUNCATION_MARKER);
+	}
+	return previewLines;
 }
 
-function formatPreviewWindow(lines: string[], start: number, end: number): string {
-	const previewLines = lines.slice(start, end);
-	if (start > 0) {
-		previewLines.unshift("…");
+function createChangedHunksPreview(lines: string[]): string | undefined {
+	const changedHunks: number[][] = [];
+	for (const [index, line] of lines.entries()) {
+		if (!isChangedPreviewLine(line)) {
+			continue;
+		}
+		const previousHunk = changedHunks[changedHunks.length - 1];
+		if (previousHunk && (previousHunk[previousHunk.length - 1] ?? -2) === index - 1) {
+			previousHunk.push(index);
+		} else {
+			changedHunks.push([index]);
+		}
 	}
-	if (end < lines.length) {
-		previewLines.push("…");
-	}
-	return previewLines.join("\n");
-}
-
-function createChangedHunkPreview(lines: string[]): string | undefined {
-	const firstChangedLine = lines.findIndex(isChangedPreviewLine);
-	if (firstChangedLine === -1) {
+	if (changedHunks.length === 0) {
 		return undefined;
 	}
 
-	let start = firstChangedLine;
-	let end = firstChangedLine + 1;
-	while (end < lines.length) {
-		const line = lines[end];
-		if (line === undefined || !isChangedPreviewLine(line)) {
-			break;
+	const selectedIndexes = new Set<number>();
+	const trySelect = (index: number): boolean => {
+		selectedIndexes.add(index);
+		if (formatSelectedPreviewLines(lines, selectedIndexes).length <= PATCH_PREVIEW_MAX_LINES) {
+			return true;
 		}
-		end++;
-	}
+		selectedIndexes.delete(index);
+		return false;
+	};
 
-	const changedHunkEnd = end;
-	while (end > start && countWindowLines(lines, start, end) > PATCH_PREVIEW_MAX_LINES) {
-		end--;
-	}
-
-	while (countWindowLines(lines, start, end) < PATCH_PREVIEW_MAX_LINES) {
-		const canAddBefore = start > 0;
-		const canAddAfter = end < lines.length;
-		if (!canAddBefore && !canAddAfter) {
-			break;
-		}
-
-		const beforeContextLines = firstChangedLine - start;
-		const afterContextLines = end - changedHunkEnd;
-		if (canAddBefore && (!canAddAfter || beforeContextLines <= afterContextLines)) {
-			start--;
-		} else {
-			end++;
+	const maxChangedHunkLength = Math.max(...changedHunks.map((hunk) => hunk.length));
+	for (let offset = 0; offset < maxChangedHunkLength; offset++) {
+		for (const hunk of changedHunks) {
+			const index = hunk[offset];
+			if (index !== undefined) {
+				trySelect(index);
+			}
 		}
 	}
 
-	return formatPreviewWindow(lines, start, end);
+	const consideredContextIndexes = new Set<number>();
+	for (let distance = 1; distance <= PATCH_PREVIEW_MAX_LINES; distance++) {
+		for (const hunk of changedHunks) {
+			const firstIndex = hunk[0];
+			const lastIndex = hunk[hunk.length - 1];
+			if (firstIndex === undefined || lastIndex === undefined) {
+				continue;
+			}
+			for (const index of [firstIndex - distance, lastIndex + distance]) {
+				if (
+					index >= 0 &&
+					index < lines.length &&
+					!isChangedPreviewLine(lines[index] ?? "") &&
+					!consideredContextIndexes.has(index)
+				) {
+					consideredContextIndexes.add(index);
+					trySelect(index);
+				}
+			}
+		}
+	}
+
+	return formatSelectedPreviewLines(lines, selectedIndexes).join("\n");
 }
 
 function countLines(text: string): number {
@@ -294,7 +323,7 @@ export function truncatePreview(text: string): string {
 	}
 
 	const lines = text.split("\n");
-	const changedHunkPreview = createChangedHunkPreview(lines);
+	const changedHunkPreview = createChangedHunksPreview(lines);
 	const previewText =
 		changedHunkPreview ??
 		[...lines.slice(0, PATCH_PREVIEW_HEAD_LINES), "…", ...lines.slice(-PATCH_PREVIEW_TAIL_LINES)].join("\n");
@@ -341,7 +370,23 @@ eof_line: "*** End of File" LF
 `;
 
 export function isOpenAIGptModel(model: Pick<Model<string>, "provider" | "id"> | undefined): boolean {
-	return model !== undefined && GPT_APPLY_PATCH_PROVIDERS.has(model.provider) && model.id.startsWith("gpt-");
+	if (model === undefined) {
+		return false;
+	}
+	if (GPT_APPLY_PATCH_PROVIDERS.has(model.provider)) {
+		return model.id.startsWith("gpt-");
+	}
+	if (!GPT_APPLY_PATCH_RELAY_PROVIDERS.has(model.provider)) {
+		return false;
+	}
+
+	const separatorIndex = model.id.indexOf("/");
+	if (separatorIndex === -1) {
+		return false;
+	}
+	const sourceProvider = model.id.slice(0, separatorIndex);
+	const sourceModel = model.id.slice(separatorIndex + 1);
+	return GPT_APPLY_PATCH_PROVIDERS.has(sourceProvider) && sourceModel.startsWith("gpt-");
 }
 
 function normalizePatchText(patchText: string): string {
@@ -1562,18 +1607,18 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 			if (preview) {
 				const bgName = options.isPartial ? "toolPendingBg" : hasFailures ? "toolErrorBg" : "toolSuccessBg";
 				const progress = result.details?.progress;
-				const title = progress
-					? `Applying patch (${progress.applied + progress.failed}/${progress.total})`
-					: options.isPartial
-						? "Applying patch"
+				const box = new Box(1, 1, (text: string) => applyLayeredBackground(theme, bgName, text));
+				if (options.isPartial || hasFailures) {
+					const title = progress
+						? `Applying patch (${progress.applied + progress.failed}/${progress.total})`
 						: hasFailures
 							? patchResult?.hasPartialSuccess
 								? "Patch partially failed"
 								: "Patch failed"
-							: "Applied patch";
-				const box = new Box(1, 1, (text: string) => applyLayeredBackground(theme, bgName, text));
-				box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
-				box.addChild(new Spacer(1));
+							: "Applying patch";
+					box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
+					box.addChild(new Spacer(1));
+				}
 				box.addChild(new Text(renderPatchPreview(preview, context.cwd, theme, true), 0, 0));
 				if (hasFailures) {
 					const failureDetails = result.content

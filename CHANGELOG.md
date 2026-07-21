@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-21
+
 ### Added
 
 - Initial standalone `apply_patch` pi extension.
@@ -16,6 +18,9 @@
 
 ### Fixed
 
+- Activate `apply_patch` for OpenAI GPT models routed through `pi-model-relay-e2ee`.
+- Represent separated edit hunks across a file in truncated patch previews instead of showing only the first hunk.
+- Remove the redundant settled `Applied patch` heading from successful TUI previews.
 - Resolve absolute, parent-relative, and symlinked patch paths with normal Node path semantics.
 - Show settled diff hunks in the Pi TUI by default after successful and partially failed patches.
 - Render complete and partial patch failures with error styling in the Pi TUI.
