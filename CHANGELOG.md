@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Register the patch grammar through Pi's public `constrainedSampling` API so capable OpenAI Responses models receive `apply_patch` as a `custom` Lark tool and replay calls/results as `custom_tool_call` / `custom_tool_call_output`.
+- Match Codex's successful patch result text and git-style add, modify, and delete ordering.
+- Preflight all update/delete hunks before writing so parser, missing-file, and context failures leave the workspace unchanged.
+- Reject multiple operations targeting the same resolved path and return Codex-compatible verification diagnostics.
+- Match the current Codex freeform tool description.
+
 ## [0.1.3] - 2026-07-21
 
 ### Added

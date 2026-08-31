@@ -10,7 +10,7 @@ import {
 	applyPatchFailureErrorOverride,
 	createApplyPatchTool,
 	extractPatchedPaths,
-	type FreeformToolFormat,
+	formatApplyPatchSuccess,
 	isOpenAIGptModel,
 	PatchParseError,
 	registerApplyPatchExtension,
@@ -118,13 +118,13 @@ describe("pi-apply-patch", () => {
 		// given
 		let capturedToolName: string | undefined;
 		let capturedDescription: string | undefined;
-		let capturedFreeform: FreeformToolFormat | undefined;
+		let capturedConstrainedSampling: ReturnType<typeof createApplyPatchTool>["constrainedSampling"];
 		const registeredEvents: string[] = [];
 		const extensionApi = {
 			registerTool(tool: ReturnType<typeof createApplyPatchTool>) {
 				capturedToolName = tool.name;
 				capturedDescription = tool.description;
-				capturedFreeform = tool.freeform;
+				capturedConstrainedSampling = tool.constrainedSampling;
 			},
 			on(...args: unknown[]) {
 				const eventName = args[0];
@@ -144,12 +144,29 @@ describe("pi-apply-patch", () => {
 		// then
 		expect(capturedToolName).toBe("apply_patch");
 		expect(capturedDescription).toBe(APPLY_PATCH_FREEFORM_DESCRIPTION);
-		expect(capturedFreeform).toEqual({
+		expect(capturedConstrainedSampling).toEqual({
 			type: "grammar",
-			syntax: "lark",
-			definition: APPLY_PATCH_LARK_GRAMMAR,
+			variants: {
+				openai_lark: APPLY_PATCH_LARK_GRAMMAR,
+			},
 		});
 		expect(registeredEvents).toContain("tool_result");
+	});
+
+	it("#given successful mixed patch result #when formatted #then matches Codex summary output", () => {
+		const result = {
+			summaries: ["update: alpha.txt", "add: beta.txt", "delete: old.txt", "move: before.txt -> after.txt"],
+			appliedFiles: ["alpha.txt", "beta.txt", "old.txt", "after.txt"],
+			appliedOperationIndexes: [0, 1, 2, 3],
+			failures: [],
+			hasPartialSuccess: false,
+			notAttemptedFiles: [],
+			details: { fuzz: 0 },
+		};
+
+		expect(formatApplyPatchSuccess(result)).toBe(
+			"Success. Updated the following files:\nA beta.txt\nM alpha.txt\nM after.txt\nD old.txt",
+		);
 	});
 
 	it("#given GPT model after reload with apply_patch already active #when session starts #then keeps apply_patch active", async () => {
@@ -794,7 +811,7 @@ EOF`;
 		expect(await readFile(path.join(directory, "old.txt"), "utf-8")).toBe("content\n");
 	});
 
-	it("#given repeated updates to one path #when previewed #then evaluates actions sequentially", async () => {
+	it("#given repeated updates to one path #when executed #then rejects the patch before writing", async () => {
 		// given
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "sample.txt"), "one\ntwo\n", "utf-8");
@@ -819,13 +836,16 @@ EOF`;
 		);
 
 		// then
-		expect(result.details?.preview?.files).toHaveLength(2);
-		expect(result.details?.preview?.files[0]?.diff).toContain("+1 ONE");
-		expect(result.details?.preview?.files[1]?.diff).toContain("+2 TWO");
-		expect(await readFile(path.join(directory, "sample.txt"), "utf-8")).toBe("ONE\nTWO\n");
+		const text = result.content.find((block) => block.type === "text")?.text ?? "";
+		expect(text).toBe(
+			`apply_patch verification failed: invalid patch: multiple operations target ${path.join(directory, "sample.txt")}`,
+		);
+		expect(result.details?.result?.failurePhase).toBe("verification");
+		expect(result.details?.preview).toBeUndefined();
+		expect(await readFile(path.join(directory, "sample.txt"), "utf-8")).toBe("one\ntwo\n");
 	});
 
-	it("#given delete then add on one path #when rendered #then preserves both declared actions", async () => {
+	it("#given delete then add on one path #when executed #then rejects the duplicate target", async () => {
 		// given
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "replace.txt"), "old\n", "utf-8");
@@ -840,20 +860,12 @@ EOF`;
 		const result = await tool.execute("apply-patch-replace-test", { input: patch }, undefined, undefined, {
 			cwd: directory,
 		} as never);
-		const component = tool.renderResult?.(
-			result,
-			{ expanded: false, isPartial: false },
-			identityTheme as never,
-			{ cwd: directory, toolCallId: "apply-patch-replace-test", args: { input: patch } } as never,
-		);
-		const rendered = component?.render(160).join("\n") ?? "";
-
 		// then
-		expect(rendered).toContain("• Applied 2 file actions (+1 -0)");
-		expect(rendered).toContain("└ Deleted replace.txt");
-		expect(rendered).toContain("└ Added replace.txt (+1 -0)");
-		expect(rendered).not.toContain("└ Edited replace.txt");
-		expect(await readFile(path.join(directory, "replace.txt"), "utf-8")).toBe("new\n");
+		const text = result.content.find((block) => block.type === "text")?.text ?? "";
+		expect(text).toBe(
+			`apply_patch verification failed: invalid patch: multiple operations target ${path.join(directory, "replace.txt")}`,
+		);
+		expect(await readFile(path.join(directory, "replace.txt"), "utf-8")).toBe("old\n");
 	});
 
 	it("#given absolute path outside cwd #when executed #then applies patch", async () => {
@@ -924,10 +936,12 @@ EOF`;
 *** End Patch`;
 
 		// when / then
-		await expect(applyPatch(directory, patch)).rejects.toThrow("Failed to find expected lines in modify.txt");
+		await expect(applyPatch(directory, patch)).rejects.toThrow(
+			`Failed to find expected lines in ${path.join(directory, "modify.txt")}`,
+		);
 	});
 
-	it("#given partial patch failure #when applying detailed #then stops before later actions", async () => {
+	it("#given a later verification failure #when applying detailed #then writes no actions", async () => {
 		// given
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "ok.txt"), "before\n", "utf-8");
@@ -952,12 +966,16 @@ EOF`;
 		const result = await applyPatchDetailed(directory, patch);
 
 		// then
-		expect(result.appliedFiles).toEqual(["ok.txt"]);
-		expect(result.appliedOperationIndexes).toEqual([0]);
+		expect(result.appliedFiles).toEqual([]);
+		expect(result.appliedOperationIndexes).toEqual([]);
 		expect(result.failures).toHaveLength(1);
+		expect(result.failurePhase).toBe("verification");
 		expect(result.failures[0]?.filePath).toBe("broken.txt");
-		expect(result.failures[0]?.message).toContain("Failed to find expected lines in broken.txt");
-		expect(result.notAttemptedFiles).toEqual(["later.txt"]);
+		expect(result.failures[0]?.message).toContain(
+			`Failed to find expected lines in ${path.join(directory, "broken.txt")}`,
+		);
+		expect(result.notAttemptedFiles).toEqual([]);
+		expect(await readFile(path.join(directory, "ok.txt"), "utf-8")).toBe("before\n");
 		expect(await readFile(path.join(directory, "later.txt"), "utf-8")).toBe("later before\n");
 	});
 
@@ -978,7 +996,9 @@ EOF`;
 *** End Patch`;
 
 		// when / then
-		await expect(applyPatch(directory, patch)).rejects.toThrow("Failed to find expected lines in broken.txt");
+		await expect(applyPatch(directory, patch)).rejects.toThrow(
+			`Failed to find expected lines in ${path.join(directory, "broken.txt")}`,
+		);
 		expect(await readFile(path.join(directory, "later.txt"), "utf-8")).toBe("before\n");
 	});
 
@@ -1006,7 +1026,7 @@ EOF`;
 		expect(result.details.fuzz).toBe(10001);
 	});
 
-	it("#given apply patch tool partial failure #when executed #then reports applied files and the real error", async () => {
+	it("#given a later verification failure #when the tool executes #then reports the Codex diagnostic", async () => {
 		// given
 		const directory = await createTempDirectory();
 		await writeFile(path.join(directory, "ok.txt"), "before\n", "utf-8");
@@ -1034,13 +1054,11 @@ EOF`;
 
 		// then
 		const text = result.content.find((block) => block.type === "text")?.text ?? "";
-		expect(text).toContain("apply_patch partially failed.");
-		expect(text).toContain("Applied actions:\n- update: ok.txt");
-		expect(text).toContain("Failed:\n- broken.txt (update): Failed to find expected lines in broken.txt:\n  missing");
-		expect(text).toContain("Not attempted: later.txt");
-		expect(text).not.toContain("MUST read");
-		expect(text).not.toContain("MUST NOT reread");
-		expect(result.details?.preview).toBeDefined();
+		expect(text).toBe(
+			`apply_patch verification failed: Failed to find expected lines in ${path.join(directory, "broken.txt")}:\nmissing`,
+		);
+		expect(result.details?.preview).toBeUndefined();
+		expect(await readFile(path.join(directory, "ok.txt"), "utf-8")).toBe("before\n");
 
 		const component = createApplyPatchTool().renderResult?.(
 			result,
@@ -1049,10 +1067,9 @@ EOF`;
 			{ cwd: directory, toolCallId: "apply-patch-failure-render", args: { input: patch } } as never,
 		);
 		const rendered = component?.render(160).join("\n") ?? "";
-		expect(rendered).toContain("Patch partially failed");
-		expect(rendered).toContain("• Edited ok.txt (+1 -1)");
-		expect(rendered).not.toContain("later after");
-		expect(rendered).toContain("broken.txt (update): Failed to find expected lines");
+		expect(rendered).toContain("Patch failed");
+		expect(rendered).toContain("apply_patch verification failed: Failed to find expected lines");
+		expect(rendered).toContain("broken.txt");
 	});
 
 	it("#given apply patch tool complete failure #when executed #then does not report partial failure", async () => {
@@ -1073,11 +1090,9 @@ EOF`;
 
 		// then
 		const text = result.content.find((block) => block.type === "text")?.text ?? "";
-		expect(text).toContain("apply_patch failed.");
-		expect(text).not.toContain("partially failed");
-		expect(text).toContain("No file actions were applied.");
-		expect(text).toContain("broken.txt (update): Failed to find expected lines in broken.txt");
-		expect(text).not.toContain("MUST read");
+		expect(text).toBe(
+			`apply_patch verification failed: Failed to find expected lines in ${path.join(directory, "broken.txt")}:\nmissing`,
+		);
 	});
 
 	it("#given a missing update target #when the tool fails #then reports the filesystem error", async () => {
@@ -1101,9 +1116,32 @@ EOF`;
 
 		// then
 		const text = result.content.find((block) => block.type === "text")?.text ?? "";
-		expect(text).toContain("missing.txt (update)");
-		expect(text).toContain("ENOENT");
-		expect(text).not.toContain("MUST read");
+		expect(text).toBe(
+			`apply_patch verification failed: Failed to read file to update ${path.join(directory, "missing.txt")}: No such file or directory (os error 2)`,
+		);
+	});
+
+	it("#given a missing delete target #when the tool fails #then reports the Codex diagnostic", async () => {
+		// given
+		const directory = await createTempDirectory();
+		const patch = `*** Begin Patch
+*** Delete File: missing.txt
+*** End Patch`;
+
+		// when
+		const result = await createApplyPatchTool().execute(
+			"apply-patch-missing-delete-test",
+			{ input: patch },
+			undefined,
+			undefined,
+			{ cwd: directory } as never,
+		);
+
+		// then
+		const text = result.content.find((block) => block.type === "text")?.text ?? "";
+		expect(text).toBe(
+			`apply_patch verification failed: Failed to delete file ${path.join(directory, "missing.txt")}`,
+		);
 	});
 
 	it("#given concurrent patches to different lines in one file #when applied #then preserves both updates", async () => {
