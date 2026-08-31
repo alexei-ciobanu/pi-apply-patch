@@ -12,6 +12,8 @@ The extension registers one LLM-callable tool: `apply_patch`. The tool accepts C
 | Non-GPT model active | restores the original `write` and `edit` toolset |
 | Raw freeform patch input | accepted and applied |
 | JSON `{ "input": "..." }` patch input | accepted and applied |
+| Invalid update/delete in a multi-file patch | rejected during preflight before any file is changed |
+| Multiple operations targeting one resolved path | rejected during preflight |
 | Absolute or parent-escaping path | accepted and resolved by Node path semantics |
 
 ## Tool
@@ -32,7 +34,7 @@ Use this tool to edit files with the Codex patch format.
 *** End Patch
 ```
 
-The OpenAI Responses API receives this as a custom freeform grammar tool, not as a JSON function tool.
+With Pi 0.84.3 or newer, the OpenAI Responses API receives this as a custom freeform grammar tool, not as a JSON function tool. Earlier Pi versions do not expose the constrained-sampling extension API required for that wire format.
 
 ## Installation
 

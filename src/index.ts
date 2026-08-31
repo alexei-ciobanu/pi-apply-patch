@@ -33,15 +33,14 @@ type PatchChunk = {
 	isEndOfFile: boolean;
 };
 
-export type FreeformToolFormat = {
+export type ApplyPatchConstrainedSampling = {
 	type: "grammar";
-	syntax: "lark";
-	definition: string;
+	variants: {
+		openai_lark: string;
+	};
 };
 
-type ApplyPatchToolDefinition = ToolDefinition<typeof APPLY_PATCH_PARAMS, ApplyPatchToolDetails | undefined> & {
-	freeform: FreeformToolFormat;
-};
+type ApplyPatchToolDefinition = ToolDefinition<typeof APPLY_PATCH_PARAMS, ApplyPatchToolDetails | undefined>;
 
 export type ApplyPatchExtensionAPI = Pick<ExtensionAPI, "on" | "getActiveTools" | "setActiveTools"> & {
 	registerTool: (tool: ApplyPatchToolDefinition) => void;
@@ -113,6 +112,7 @@ export type ApplyPatchResult = {
 	appliedFiles: string[];
 	appliedOperationIndexes: number[];
 	failures: ApplyPatchFailure[];
+	failurePhase?: "application" | "verification";
 	hasPartialSuccess: boolean;
 	notAttemptedFiles: string[];
 	details: {
@@ -347,7 +347,7 @@ function normalizeApplyPatchArguments(args: unknown): ApplyPatchParams {
 
 const STANDARD_EDIT_TOOL_NAMES = ["edit", "write"] as const;
 export const APPLY_PATCH_FREEFORM_DESCRIPTION =
-	"Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.";
+	"The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.";
 export const APPLY_PATCH_LARK_GRAMMAR = `start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
@@ -1294,6 +1294,79 @@ async function applySingleHunk(
 	});
 }
 
+type ApplyPatchPreflightFailure = {
+	failure: ApplyPatchFailure;
+	operationIndex: number;
+};
+
+function createVerificationFailureResult(preflightFailure: ApplyPatchPreflightFailure): ApplyPatchResult {
+	return {
+		summaries: [],
+		appliedFiles: [],
+		appliedOperationIndexes: [],
+		failures: [preflightFailure.failure],
+		failurePhase: "verification",
+		hasPartialSuccess: false,
+		notAttemptedFiles: [],
+		details: { fuzz: 0 },
+	};
+}
+
+function formatPreflightError(hunk: ParsedPatch, absolutePath: string, error: unknown): string {
+	if (hunk.type === "update" && hasErrorCode(error, "ENOENT")) {
+		return `Failed to read file to update ${absolutePath}: No such file or directory (os error 2)`;
+	}
+	if (hunk.type === "delete" && hasErrorCode(error, "ENOENT")) {
+		return `Failed to delete file ${absolutePath}`;
+	}
+	return error instanceof Error ? error.message : String(error);
+}
+
+async function preflightParsedPatch(
+	cwd: string,
+	hunks: ParsedPatch[],
+): Promise<ApplyPatchPreflightFailure | undefined> {
+	const resolvedTargets = new Set<string>();
+	for (const [operationIndex, hunk] of hunks.entries()) {
+		const absolutePath = resolvePatchPath(cwd, hunk.filePath);
+		if (resolvedTargets.has(absolutePath)) {
+			return {
+				failure: {
+					filePath: hunk.filePath,
+					operation: operationForHunk(hunk),
+					message: `invalid patch: multiple operations target ${absolutePath}`,
+				},
+				operationIndex,
+			};
+		}
+		resolvedTargets.add(absolutePath);
+	}
+
+	for (const [operationIndex, hunk] of hunks.entries()) {
+		if (hunk.type === "add") {
+			continue;
+		}
+		const absolutePath = resolvePatchPath(cwd, hunk.filePath);
+		try {
+			const currentContent = await readFile(absolutePath, "utf-8");
+			if (hunk.type === "update" && hunk.chunks.length > 0) {
+				replaceChunks(currentContent, absolutePath, hunk.chunks);
+			}
+		} catch (error) {
+			return {
+				failure: {
+					filePath: hunk.filePath,
+					operation: operationForHunk(hunk),
+					message: formatPreflightError(hunk, absolutePath, error),
+				},
+				operationIndex,
+			};
+		}
+	}
+
+	return undefined;
+}
+
 export async function applyPatchDetailed(
 	cwd: string,
 	patchText: string,
@@ -1307,6 +1380,12 @@ async function applyParsedPatchDetailed(
 	hunks: ParsedPatch[],
 	onProgress?: ApplyPatchProgressCallback,
 ): Promise<ApplyPatchResult> {
+	const preflightFailure = await preflightParsedPatch(cwd, hunks);
+	if (preflightFailure) {
+		await notifyApplyPatchProgress(onProgress, { applied: 0, failed: 1, total: hunks.length });
+		return createVerificationFailureResult(preflightFailure);
+	}
+
 	const summaries: string[] = [];
 	const appliedFiles: string[] = [];
 	const appliedOperationIndexes: number[] = [];
@@ -1341,6 +1420,7 @@ async function applyParsedPatchDetailed(
 		appliedFiles,
 		appliedOperationIndexes,
 		failures,
+		...(failures.length > 0 ? { failurePhase: "application" as const } : {}),
 		hasPartialSuccess: appliedFiles.length > 0 && failures.length > 0,
 		notAttemptedFiles,
 		details: { fuzz },
@@ -1349,6 +1429,9 @@ async function applyParsedPatchDetailed(
 }
 
 function formatApplyPatchFailure(result: ApplyPatchResult): string {
+	if (result.failurePhase === "verification") {
+		return `apply_patch verification failed: ${result.failures[0]?.message ?? "invalid patch"}`;
+	}
 	const lines = [result.hasPartialSuccess ? "apply_patch partially failed." : "apply_patch failed."];
 	if (result.summaries.length > 0) {
 		lines.push("Applied actions:", ...result.summaries.map((summary) => `- ${summary}`));
@@ -1366,8 +1449,37 @@ function formatApplyPatchFailure(result: ApplyPatchResult): string {
 	return lines.join("\n");
 }
 
+export function formatApplyPatchSuccess(result: ApplyPatchResult): string {
+	const changes = result.summaries.map((summary) => {
+		if (summary.startsWith("add: ")) {
+			return { kind: "A", path: summary.slice("add: ".length) } as const;
+		}
+		if (summary.startsWith("delete: ")) {
+			return { kind: "D", path: summary.slice("delete: ".length) } as const;
+		}
+		if (summary.startsWith("move: ")) {
+			const separatorIndex = summary.lastIndexOf(" -> ");
+			return {
+				kind: "M",
+				path: separatorIndex >= 0 ? summary.slice(separatorIndex + " -> ".length) : summary.slice("move: ".length),
+			} as const;
+		}
+		return { kind: "M", path: summary.slice("update: ".length) } as const;
+	});
+	const lines = ["Success. Updated the following files:"];
+	for (const kind of ["A", "M", "D"] as const) {
+		lines.push(...changes.filter((change) => change.kind === kind).map((change) => `${kind} ${change.path}`));
+	}
+	return lines.join("\n");
+}
+
 export async function applyPatch(cwd: string, patchText: string): Promise<string[]> {
 	const hunks = parseNonEmptyPatch(patchText);
+	const preflightFailure = await preflightParsedPatch(cwd, hunks);
+	if (preflightFailure) {
+		const result = createVerificationFailureResult(preflightFailure);
+		throw new ApplyPatchError(preflightFailure.failure.message, result);
+	}
 
 	const summaries: string[] = [];
 	const appliedFiles: string[] = [];
@@ -1388,6 +1500,7 @@ export async function applyPatch(cwd: string, patchText: string): Promise<string
 				appliedFiles,
 				appliedOperationIndexes: hunks.slice(0, operationIndex).map((_, index) => index),
 				failures: [failure],
+				failurePhase: "application",
 				hasPartialSuccess: appliedFiles.length > 0,
 				notAttemptedFiles: hunks.slice(operationIndex + 1).map(displayPathForHunk),
 				details: { fuzz: 0 },
@@ -1515,11 +1628,17 @@ export function applyPatchFailureErrorOverride(event: {
 }
 
 export function createApplyPatchTool(): ApplyPatchToolDefinition {
-	const tool = defineTool({
+	return defineTool({
 		name: "apply_patch",
 		label: "ApplyPatch",
 		description: APPLY_PATCH_FREEFORM_DESCRIPTION,
 		parameters: APPLY_PATCH_PARAMS,
+		constrainedSampling: {
+			type: "grammar",
+			variants: {
+				openai_lark: APPLY_PATCH_LARK_GRAMMAR,
+			},
+		} satisfies ApplyPatchConstrainedSampling,
 		prepareArguments: normalizeApplyPatchArguments,
 		promptSnippet: "Apply Codex-format file patches with apply_patch",
 		promptGuidelines: [
@@ -1585,7 +1704,7 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 			}
 
 			return {
-				content: [{ type: "text", text: result.summaries.join("\n") }],
+				content: [{ type: "text", text: formatApplyPatchSuccess(result) }],
 				details: settledPreview ? { preview: settledPreview, result } : { result },
 			};
 		},
@@ -1645,7 +1764,8 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 				.join("\n");
 			if (hasFailures) {
 				const title = patchResult?.hasPartialSuccess ? "Patch partially failed" : "Patch failed";
-				const failureDetails = text.split("\n").slice(1).join("\n");
+				const failureDetails =
+					patchResult?.failurePhase === "verification" ? text : text.split("\n").slice(1).join("\n");
 				const box = new Box(1, 1, (value: string) => applyLayeredBackground(theme, "toolErrorBg", value));
 				box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
 				if (failureDetails) {
@@ -1660,14 +1780,6 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 			}
 			return component;
 		},
-	});
-
-	return Object.assign(tool, {
-		freeform: {
-			type: "grammar",
-			syntax: "lark",
-			definition: APPLY_PATCH_LARK_GRAMMAR,
-		} satisfies FreeformToolFormat,
 	});
 }
 
